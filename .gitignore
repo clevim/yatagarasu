@@ -2,3 +2,12 @@
 /yatagarasu
 /data/
 yata.koplugin/config.lua
+
+# Docs stay local. README.md is the only .md that ships: the contract and the
+# build plan are owned by the Karasu repo, and a second copy in git history is
+# a second thing to keep in step.
+*.md
+!README.md
+/docs/
+CLAUDE.md
+.claude/

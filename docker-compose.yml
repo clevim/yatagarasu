@@ -1,0 +1,39 @@
+services:
+  yatagarasu:
+    image: ghcr.io/clevim/yatagarasu:latest
+    build: .          # comment out once the image is published
+    container_name: yatagarasu
+    restart: unless-stopped
+    ports:
+      # host:container — 8080 no host já é de outro projeto aqui
+      - "8088:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      # Blank (or unset) means an open shelf: only do that on a trusted LAN.
+      YATA_API_KEY: "change-me"
+      # Set this when behind a reverse proxy — it is what gets baked into the
+      # generated plugin, and a wrong value only fails later, on the e-reader.
+      # YATA_PUBLIC_URL: "https://yata.example.net"
+    # The image runs as root so it can write to a bind-mounted ./data. Pin it
+    # to your own uid if you prefer:
+    # user: "1000:1000"
+
+  # Cloudflare bypass for Karasu's sources. Nothing in Yatagarasu talks to it —
+  # it is here because it is the same machine, the same compose file, and the
+  # same afternoon of setup. Karasu: Settings → Advanced → FlareSolverr URL,
+  # http://<host>:8191.
+  #
+  # Off by default: it carries a headless Chrome, so it is ~1 GB of image and
+  # a few hundred MB of RAM against this container's ~15 MB. Start it with
+  #   docker compose --profile flaresolverr up -d
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    profiles: ["flaresolverr"]
+    restart: unless-stopped
+    ports:
+      - "8191:8191"
+    environment:
+      LOG_LEVEL: info
+      TZ: America/Sao_Paulo
