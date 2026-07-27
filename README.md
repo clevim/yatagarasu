@@ -49,7 +49,7 @@ homelab occupants (8080, 8096 Jellyfin, 8123 Home Assistant, 9000 Portainer).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `YATA_API_KEY` | *(blank)* | Bearer token. **Blank means unauthenticated requests are accepted** — fine on a trusted LAN, nowhere else. |
+| `YATA_API_KEY` | *(blank)* | Bearer token. **Blank means unauthenticated requests are accepted** — fine on a trusted LAN, nowhere else. Generate one with `openssl rand -base64 24`; the server warns at startup if it is short or blank. |
 | `YATA_PUBLIC_URL` | *(request host)* | The URL clients see. Set it behind a reverse proxy; it is baked into the generated plugin. |
 | `TZ` | `UTC` | Timezone for the timestamps on the web page. |
 | `YATA_DATA` | `/data` | Where CBZ files and metadata live. |
@@ -154,7 +154,12 @@ POST   /api/shelf/{chapterId}/read    plugin — idempotent, {"read":false} undo
 GET    /plugin.zip                    browser — the plugin, preconfigured
 GET    /settings, POST /settings      browser — the settings page
 POST   /api/shelf/{chapterId}/delete  browser — the remove button; forms cannot send DELETE
+POST   /login, POST /logout           browser — trades the key for a session cookie
 ```
+
+Programs authenticate with `Authorization: Bearer <key>`. Browsers POST the key once to `/login`
+and carry a session cookie after that — the key is never accepted from a query string, so it stays
+out of browser history and out of every proxy and tunnel log in the path.
 
 The first four are the frozen contract with Karasu, specified in `docs/koreader-sync.md` in the
 [Karasu repo](https://github.com/clevim/Karasu) — that copy is the source of truth, and Karasu will
@@ -169,7 +174,7 @@ dozen small reads.
 ## Develop
 
 ```sh
-go test ./...          # 18 tests, no dependencies
+go test ./...          # 21 tests, no dependencies
 lua api_test.lua       # the plugin's download path; go test runs it too
 go run .               # YATA_DATA=./data YATA_API_KEY= go run .
 ```

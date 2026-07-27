@@ -9,6 +9,12 @@ services:
       - "3080:3080"
     volumes:
       - ./data:/data
+    # The binary writes only to /data and binds a port above 1024, so it needs
+    # no capabilities and no writable root. This is what limits the blast radius
+    # if the Go process is ever the thing that gets taken.
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     # These are first-run defaults only. Once anything is saved on the Settings
     # page, /data/settings.json wins and editing them here does nothing.
     environment:

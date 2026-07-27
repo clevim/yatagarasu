@@ -143,8 +143,8 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <p>KOReader shelf for Karasu</p>
   </div>
   <div class="actions">
-    <a class="btn" href="/settings{{.KeyQuery}}">Settings</a>
-    <a class="btn primary" href="/plugin.zip{{.KeyQuery}}" download>Download KOReader plugin</a>
+    <a class="btn" href="/settings">Settings</a>
+    <a class="btn primary" href="/plugin.zip" download>Download KOReader plugin</a>
   </div>
 </header>
 
@@ -206,12 +206,10 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           {{if .Read}}<span class="tag">read</span>
           <form class="inline" method="post" action="/api/shelf/{{.ID}}/read">
             <input type="hidden" name="read" value="false">
-            <input type="hidden" name="key" value="{{$.Key}}">
             <button class="btn ghost" type="submit" title="Undo a read report sent by mistake">undo</button>
           </form>{{end}}
           <form class="inline" method="post" action="/api/shelf/{{.ID}}/delete"
-                onsubmit="return confirm('Remove {{.Name}} from the shelf? Karasu re-uploads it on its next sync if it still wants it here.')">
-            <input type="hidden" name="key" value="{{$.Key}}">
+                data-confirm="Remove {{.Name}} from the shelf? Karasu re-uploads it on its next sync if it still wants it here.">
             <button class="btn ghost" type="submit" title="Free the disk now. Does not delete anything already on the e-reader.">remove</button>
           </form>
         </td>
@@ -235,6 +233,11 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 {{end}}
 
 </div>
+
+<script nonce="{{.Nonce}}">
+for (const f of document.querySelectorAll("form[data-confirm]"))
+  f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+</script>
 `))
 
 var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
@@ -280,14 +283,13 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
     <h1><span class="crow">八</span> Settings</h1>
     <p>Stored in {{.DataDir}}/settings.json, applied without a restart</p>
   </div>
-  <a class="btn" href="/{{.KeyQuery}}">Back to the shelf</a>
+  <a class="btn" href="/">Back to the shelf</a>
 </header>
 
 {{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
 {{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
 
 <form method="post" action="/settings">
-  <input type="hidden" name="key" value="{{.Key}}">
 
   <section class="panel">
     <h2>How clients reach this shelf</h2>
@@ -330,7 +332,7 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
 
   <div class="save">
     <button class="btn primary" type="submit">Save</button>
-    <a class="btn ghost" href="/{{.KeyQuery}}">Cancel</a>
+    <a class="btn ghost" href="/">Cancel</a>
   </div>
 </form>
 
@@ -352,20 +354,30 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
       <strong>Clear reading history</strong>
       <p>Empties the activity chart and the recently-finished list. Read flags on the chapters stay.</p>
     </div>
-    <form method="post" action="/settings" onsubmit="return confirm('Clear {{.Events}} recorded read events?')">
-      <input type="hidden" name="key" value="{{.Key}}">
+    <form method="post" action="/settings" data-confirm="Clear {{.Events}} recorded read events?">
       <input type="hidden" name="action" value="clear-history">
       <button class="btn" type="submit">Clear history</button>
     </form>
   </div>
+  {{if .HasKey}}
+  <div class="row">
+    <div>
+      <strong>Log out of this browser</strong>
+      <p>Drops the session cookie. The API key itself is unchanged — Karasu and
+        the e-reader keep working.</p>
+    </div>
+    <form method="post" action="/logout">
+      <button class="btn" type="submit">Log out</button>
+    </form>
+  </div>
+  {{end}}
   <div class="row">
     <div>
       <strong>Empty the shelf</strong>
       <p>Deletes all {{.Entries}} CBZ files and their metadata. Karasu re-uploads whatever it still
         wants here on its next sync, so this frees the disk rather than vetoing anything.</p>
     </div>
-    <form method="post" action="/settings" onsubmit="return confirm('Delete all {{.Entries}} chapters from the shelf?')">
-      <input type="hidden" name="key" value="{{.Key}}">
+    <form method="post" action="/settings" data-confirm="Delete all {{.Entries}} chapters from the shelf?">
       <input type="hidden" name="action" value="empty-shelf">
       <button class="btn" type="submit">Empty shelf</button>
     </form>
@@ -373,4 +385,32 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
 </section>
 
 </div>
+
+<script nonce="{{.Nonce}}">
+for (const f of document.querySelectorAll("form[data-confirm]"))
+  f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+</script>
+`))
+
+var gateTmpl = template.Must(template.New("gate").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yatagarasu</title>` + baseHead + `
+<style>
+  .gate{max-width:22rem;margin:18vh auto;padding:0 1.5rem}
+  .gate h1{margin-bottom:.25rem}
+  .gate p{color:var(--muted);margin-bottom:1.5rem}
+  .gate .bad{color:oklch(0.44 0.150 25);font-weight:550}
+  @media (prefers-color-scheme:dark){.gate .bad{color:oklch(0.84 0.110 25)}}
+</style>
+<body><main class="gate">
+  <h1>Yatagarasu</h1>
+  {{if .Problem}}<p class="bad">{{.Problem}}</p>
+  {{else}}<p>This shelf is protected. Enter its API key to continue.</p>{{end}}
+  <form method="post" action="/login">
+    <label class="field"><span>API key</span>
+      <input name="key" type="password" autofocus autocomplete="current-password">
+    </label>
+    <button class="btn primary" type="submit">Open shelf</button>
+  </form>
+</main>
 `))

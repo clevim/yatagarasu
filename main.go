@@ -7,13 +7,11 @@
 package main
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,6 +85,12 @@ func (s shelf) list() ([]Entry, error) {
 	}
 	entries := []Entry{} // never nil: the plugin's Lua will not default it
 	for _, p := range paths {
+		// Only <chapterId>.json is an entry. settings.json lives in the same
+		// directory and unmarshals into an Entry without error, which put a
+		// blank chapter 0 on the shelf and in the feed Karasu reconciles against.
+		if _, err := strconv.ParseInt(strings.TrimSuffix(filepath.Base(p), ".json"), 10, 64); err != nil {
+			continue
+		}
 		b, err := os.ReadFile(p)
 		if err != nil {
 			log.Printf("yata: skipping unreadable %s: %v", p, err)
@@ -120,6 +124,11 @@ func (s shelf) handleList(w http.ResponseWriter, r *http.Request) {
 // so no ParseMultipartForm. Karasu sends metadata before file, but the temp
 // name does not depend on that ordering.
 func (s shelf) handleUpload(w http.ResponseWriter, r *http.Request) {
+	// Streamed, never buffered — but still bounded. Without a cap one wedged
+	// client can fill the disk, and a full /data loses the metadata writes for
+	// every other chapter, not just its own.
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+
 	mr, err := r.MultipartReader()
 	if err != nil {
 		http.Error(w, "expected multipart/form-data", http.StatusBadRequest)
@@ -271,7 +280,7 @@ func (s shelf) handleRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isForm(r) {
-		http.Redirect(w, r, "/"+keyQuery(r), http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	writeJSON(w, e)
@@ -286,37 +295,6 @@ func (s shelf) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// auth: a blank key is an intentionally open shelf (LAN behind a firewall),
-// not a misconfiguration. The ?key= form exists so a browser can fetch
-// /plugin.zip without a way to set headers.
-//
-// The key is read per request, not closed over: the settings page can change it
-// and the next request has to use the new one without a restart.
-func auth(cfg *config, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := cfg.apiKey()
-		want := []byte("Bearer " + key)
-		if key != "" {
-			got := r.Header.Get("Authorization")
-			if got == "" && r.URL.Query().Get("key") != "" {
-				got = "Bearer " + r.URL.Query().Get("key")
-			}
-			if subtle.ConstantTimeCompare([]byte(got), want) != 1 {
-				// A browser cannot set a header by following a link, and the
-				// browser is how the plugin gets downloaded: give it a form
-				// instead of a dead end.
-				if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
-					askForKey(w)
-					return
-				}
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func chapterID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(r.PathValue("chapterId"), 10, 64)
 }
@@ -326,19 +304,6 @@ func isForm(r *http.Request) bool {
 	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded")
 }
 
-// keyQuery carries the browser's ?key= across a redirect, so acting on the
-// page does not bounce the user back to the key form.
-func keyQuery(r *http.Request) string {
-	k := r.URL.Query().Get("key")
-	if k == "" {
-		k = r.PostFormValue("key")
-	}
-	if k == "" {
-		return ""
-	}
-	return "?key=" + url.QueryEscape(k)
-}
-
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
@@ -346,10 +311,16 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 const version = "1"
 
+// maxUpload bounds one chapter. Karasu sends ~60 MB; this leaves room for a
+// pathological volume without leaving the shelf open to being filled.
+const maxUpload = 1 << 30 // 1 GiB
+
 // now is a var so tests can freeze it.
 var now = func() int64 { return time.Now().Unix() }
 
 func router(s shelf) http.Handler {
+	g := &gate{cfg: s.cfg, sess: newSessions(), thr: &throttle{}}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/shelf", s.handleList)
@@ -363,7 +334,13 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
-	return auth(s.cfg, mux)
+
+	// /login is the only route outside the gate — it is how you get through it.
+	top := http.NewServeMux()
+	top.HandleFunc("POST /login", g.handleLogin)
+	top.HandleFunc("POST /logout", g.handleLogout)
+	top.Handle("/", g.wrap(mux))
+	return top
 }
 
 func env(k, def string) string {
@@ -379,8 +356,11 @@ func main() {
 		log.Fatalf("yata: cannot use data dir %s: %v", dir, err)
 	}
 	s := shelf{dir: dir, cfg: loadConfig(dir)}
-	if s.cfg.apiKey() == "" {
-		log.Print("yata: no API key set, accepting unauthenticated requests")
+	switch k := s.cfg.apiKey(); {
+	case k == "":
+		log.Print("yata: no API key set, accepting unauthenticated requests — do not expose this to the internet")
+	case len(k) < 16:
+		log.Printf("yata: the API key is %d characters; use 24+ random ones if this shelf is reachable from outside the LAN", len(k))
 	}
 	addr := env("YATA_ADDR", ":3080")
 	log.Printf("yata: listening on %s, data in %s", addr, s.dir)

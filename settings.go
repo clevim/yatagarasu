@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"html/template"
 	"log"
 	"net/http"
 	"net/url"
@@ -134,7 +133,7 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 			s.renderSettings(w, r, "Could not clear the history: "+err.Error())
 			return
 		}
-		s.redirectToSettings(w, r, s.cfg.apiKey(), "History cleared.")
+		s.redirectToSettings(w, r, "History cleared.")
 		return
 	case "empty-shelf":
 		entries, _ := s.list()
@@ -142,7 +141,7 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 			os.Remove(s.cbz(e.ChapterID))
 			os.Remove(s.meta(e.ChapterID))
 		}
-		s.redirectToSettings(w, r, s.cfg.apiKey(), "Shelf emptied.")
+		s.redirectToSettings(w, r, "Shelf emptied.")
 		return
 	}
 
@@ -157,16 +156,14 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		s.renderSettings(w, r, "Not saved: "+err.Error())
 		return
 	}
-	// The key the browser is holding may be the one that just changed, so the
-	// redirect has to carry the new one or the next click is a 401.
-	s.redirectToSettings(w, r, next.APIKey, "Saved.")
+	s.redirectToSettings(w, r, "Saved.")
 }
 
-func (s shelf) redirectToSettings(w http.ResponseWriter, r *http.Request, key, note string) {
+// redirectToSettings carries only the flash message. Changing the API key used
+// to log the browser out of its own settings page; the session cookie is a
+// separate credential, so it now survives the change.
+func (s shelf) redirectToSettings(w http.ResponseWriter, r *http.Request, note string) {
 	q := url.Values{}
-	if key != "" {
-		q.Set("key", key)
-	}
 	if note != "" {
 		q.Set("note", note)
 	}
@@ -185,18 +182,15 @@ func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem st
 	cur := s.cfg.get()
 	entries, _ := s.list()
 
-	key := r.URL.Query().Get("key")
-	if key == "" {
-		key = r.PostFormValue("key")
-	}
-
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if problem != "" {
 		w.WriteHeader(http.StatusBadRequest)
 	}
 	err := settingsTmpl.Execute(w, map[string]any{
-		"KeyQuery":   template.URL(keyQuery(r)),
-		"Key":        key,
+		"Nonce":      nonce,
+		"HasKey":     s.cfg.apiKey() != "",
 		"Note":       r.URL.Query().Get("note"),
 		"Problem":    problem,
 		"PublicURL":  cur.PublicURL,
@@ -227,5 +221,5 @@ func (s shelf) handleDeleteForm(w http.ResponseWriter, r *http.Request) {
 	}
 	os.Remove(s.cbz(id))
 	os.Remove(s.meta(id))
-	http.Redirect(w, r, "/"+keyQuery(r), http.StatusSeeOther)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

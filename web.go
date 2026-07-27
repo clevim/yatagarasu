@@ -2,11 +2,8 @@ package main
 
 import (
 	"fmt"
-	"html/template"
-	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"time"
@@ -219,15 +216,11 @@ func (s shelf) handleIndex(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	keyQ := ""
-	if k := r.URL.Query().Get("key"); k != "" {
-		keyQ = "?key=" + url.QueryEscape(k)
-	}
-
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	err := indexTmpl.Execute(w, map[string]any{
-		"KeyQuery":  template.URL(keyQ),
-		"Key":       r.URL.Query().Get("key"),
+		"Nonce":     nonce,
 		"Manga":     groups,
 		"Chapters":  len(entries),
 		"Unread":    len(entries) - readN,
@@ -252,28 +245,17 @@ func (s shelf) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// askForKey turns a 401 in a browser into something usable: submitting the
-// form is a plain GET with ?key=, which is what the middleware also accepts.
-func askForKey(w http.ResponseWriter) {
+// askForKey turns a 401 in a browser into something usable. The form POSTs the
+// key to /login, which trades it for a session cookie — so the key is typed
+// once and never appears in a URL, a history entry or a tunnel's request log.
+//
+// The caller writes the status code: this is a 401 body from the gate and a
+// plain 200 after a logout.
+func askForKey(w http.ResponseWriter, problem string) {
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusUnauthorized)
-	io.WriteString(w, `<!doctype html>
-<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Yatagarasu</title>`+baseHead+`
-<style>
-  .gate{max-width:22rem;margin:18vh auto;padding:0 1.5rem}
-  .gate h1{margin-bottom:.25rem}
-  .gate p{color:var(--muted);margin-bottom:1.5rem}
-</style>
-<body><main class="gate">
-  <h1>Yatagarasu</h1>
-  <p>This shelf is protected. Enter its API key to continue.</p>
-  <form method="get" action="/">
-    <label class="field"><span>API key</span>
-      <input name="key" type="password" autofocus autocomplete="current-password">
-    </label>
-    <button class="btn primary" type="submit">Open shelf</button>
-  </form>
-</main>
-`)
+	if err := gateTmpl.Execute(w, map[string]any{"Problem": problem, "Nonce": nonce}); err != nil {
+		log.Printf("yata: rendering the key form failed: %v", err)
+	}
 }
