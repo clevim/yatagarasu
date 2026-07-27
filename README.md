@@ -1,9 +1,14 @@
-<img src="assets/icon.png" alt="" width="120" align="right">
+<p align="center">
+  <img src="assets/icon.png" alt="" width="132">
+</p>
 
-# Yatagarasu
+<h1 align="center">Yatagarasu</h1>
 
-Self-hosted shelf that carries manga chapters from [Karasu](https://github.com/clevim/Karasu)
-(Android manga reader) to **KOReader** on an e-reader, and read state back.
+<p align="center">
+  Self-hosted shelf that carries manga chapters from
+  <a href="https://github.com/clevim/Karasu">Karasu</a> (Android manga reader)
+  to <b>KOReader</b> on an e-reader, and read state back.
+</p>
 
 **八咫烏** — the three-legged crow that guides between worlds. Karasu (烏) pushes chapters here;
 the KOReader plugin picks them up and reports back what was finished.
