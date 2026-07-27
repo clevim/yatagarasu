@@ -63,6 +63,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
  .wrap{max-width:60rem;margin:0 auto;padding:2rem 1.25rem 4rem}
  header.top{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between;margin-bottom:1.75rem}
  header.top p{margin:.15rem 0 0;color:var(--muted);font-size:.875rem}
+ header.top .actions{display:flex;gap:.5rem;flex-wrap:wrap}
  .crow{color:var(--accent)}
 
  /* Stat strip: hairline-separated figures, not a row of identical cards.
@@ -133,7 +134,10 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <h1><span class="crow">八</span> Yatagarasu</h1>
     <p>KOReader shelf for Karasu</p>
   </div>
-  <a class="btn primary" href="/plugin.zip{{.KeyQuery}}" download>Download KOReader plugin</a>
+  <div class="actions">
+    <a class="btn" href="/settings{{.KeyQuery}}">Settings</a>
+    <a class="btn primary" href="/plugin.zip{{.KeyQuery}}" download>Download KOReader plugin</a>
+  </div>
 </header>
 
 <div class="stats">
@@ -197,6 +201,11 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
             <input type="hidden" name="key" value="{{$.Key}}">
             <button class="btn ghost" type="submit" title="Undo a read report sent by mistake">undo</button>
           </form>{{end}}
+          <form class="inline" method="post" action="/api/shelf/{{.ID}}/delete"
+                onsubmit="return confirm('Remove {{.Name}} from the shelf? Karasu re-uploads it on its next sync if it still wants it here.')">
+            <input type="hidden" name="key" value="{{$.Key}}">
+            <button class="btn ghost" type="submit" title="Free the disk now. Does not delete anything already on the e-reader.">remove</button>
+          </form>
         </td>
       </tr>
       {{end}}
@@ -216,6 +225,144 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   <p>Chapters appear here within a sync of fixing that.</p>
 </section>
 {{end}}
+
+</div>
+`))
+
+var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yatagarasu — settings</title>` + baseCSS + `
+<style>
+ .wrap{max-width:38rem;margin:0 auto;padding:2rem 1.25rem 4rem}
+ header.top{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between;margin-bottom:1.5rem}
+ header.top p{margin:.15rem 0 0;color:var(--muted);font-size:.875rem}
+ .crow{color:var(--accent)}
+ .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+        padding:1.1rem 1.25rem;margin-bottom:1.25rem}
+ .panel h2{margin-bottom:.25rem}
+ .panel>p.hint{color:var(--muted);font-size:.8125rem;margin:0 0 1rem}
+ .field .note{display:block;margin-top:.3rem;color:var(--muted);font-size:.75rem}
+ .field:last-of-type{margin-bottom:0}
+ .choices{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.3rem}
+ .choices label{display:inline-flex;align-items:center;gap:.35rem;padding:.4rem .7rem;cursor:pointer;
+                border:1px solid var(--line);border-radius:var(--radius);background:var(--bg);font-size:.875rem}
+ .choices label:has(input:checked){border-color:var(--accent);background:var(--raise);font-weight:550}
+ .choices input{accent-color:var(--accent-solid)}
+ .save{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
+ .facts{list-style:none;margin:0;padding:0;font-size:.875rem}
+ .facts li{display:flex;justify-content:space-between;gap:1rem;padding:.4rem 0;border-bottom:1px solid var(--line)}
+ .facts li:last-child{border-bottom:0}
+ .facts span{color:var(--muted)}
+ .facts b{font-weight:550;font-variant-numeric:tabular-nums;text-align:right}
+ .danger{border-color:oklch(0.62 0.150 25 / .45)}
+ .danger .row{display:flex;flex-wrap:wrap;gap:.75rem 1rem;align-items:center;justify-content:space-between;
+              padding:.7rem 0;border-bottom:1px solid var(--line)}
+ .danger .row:last-child{border-bottom:0;padding-bottom:0}
+ .danger .row p{margin:0;font-size:.8125rem;color:var(--muted);max-width:24rem}
+ .danger .row strong{display:block;color:var(--ink);font-weight:550;font-size:.9375rem}
+ .flash{padding:.7rem 1rem;border-radius:var(--radius);margin-bottom:1.25rem;font-size:.875rem}
+ .flash.ok{background:var(--ok-bg);color:var(--ok)}
+ .flash.bad{background:oklch(0.93 0.050 25);color:oklch(0.44 0.150 25)}
+ @media (prefers-color-scheme:dark){.flash.bad{background:oklch(0.30 0.060 25);color:oklch(0.84 0.110 25)}}
+</style>
+<body><div class="wrap">
+
+<header class="top">
+  <div>
+    <h1><span class="crow">八</span> Settings</h1>
+    <p>Stored in {{.DataDir}}/settings.json, applied without a restart</p>
+  </div>
+  <a class="btn" href="/{{.KeyQuery}}">Back to the shelf</a>
+</header>
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+<form method="post" action="/settings">
+  <input type="hidden" name="key" value="{{.Key}}">
+
+  <section class="panel">
+    <h2>How clients reach this shelf</h2>
+    <p class="hint">Both are baked into the plugin ZIP the moment it is downloaded.</p>
+    <label class="field"><span>Public URL</span>
+      <input name="publicUrl" value="{{.PublicURL}}" placeholder="http://192.168.0.10:8088"
+             inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <em class="note">Leave blank to use whatever host the browser asked for. Set it behind a reverse
+        proxy, or the plugin gets a base_url that only fails on the e-reader.</em>
+    </label>
+    <label class="field"><span>API key</span>
+      <input name="apiKey" value="{{.APIKey}}" autocomplete="off" autocapitalize="off"
+             autocorrect="off" spellcheck="false">
+      <em class="note">Blank means unauthenticated requests are accepted — fine on a trusted LAN,
+        nowhere else. Karasu and the plugin both need the new value after a change.</em>
+    </label>
+  </section>
+
+  <section class="panel">
+    <h2>Time and history</h2>
+    <p class="hint">It is {{.Now}} on this shelf right now.</p>
+    <label class="field"><span>Timezone</span>
+      <input name="timezone" value="{{.Timezone}}" placeholder="America/Sao_Paulo" list="tz"
+             autocapitalize="off" autocorrect="off" spellcheck="false">
+      <datalist id="tz">
+        {{range .Zones}}<option value="{{.}}">{{end}}
+      </datalist>
+      <em class="note">An IANA name. The container runs on UTC, which puts the day boundary on the
+        activity chart at 21:00 in Brazil and labels every bar a day early.</em>
+    </label>
+    <div class="field"><span>Activity chart window</span>
+      <div class="choices">
+        {{$d := .ChartDays}}
+        {{range .DayChoices}}
+        <label><input type="radio" name="chartDays" value="{{.}}"{{if eq . $d}} checked{{end}}>{{.}} days</label>
+        {{end}}
+      </div>
+    </div>
+  </section>
+
+  <div class="save">
+    <button class="btn primary" type="submit">Save</button>
+    <a class="btn ghost" href="/{{.KeyQuery}}">Cancel</a>
+  </div>
+</form>
+
+<section class="panel" style="margin-top:1.25rem">
+  <h2>What is on disk</h2>
+  <p class="hint">Yatagarasu {{.Version}}</p>
+  <ul class="facts">
+    <li><span>Chapters on the shelf</span><b>{{.Entries}}</b></li>
+    <li><span>Recorded read events</span><b>{{.Events}}</b></li>
+    <li><span>Data directory</span><b>{{.DataDir}}</b></li>
+  </ul>
+</section>
+
+<section class="panel danger">
+  <h2>Danger zone</h2>
+  <p class="hint">Neither of these touches anything already downloaded to the e-reader.</p>
+  <div class="row">
+    <div>
+      <strong>Clear reading history</strong>
+      <p>Empties the activity chart and the recently-finished list. Read flags on the chapters stay.</p>
+    </div>
+    <form method="post" action="/settings" onsubmit="return confirm('Clear {{.Events}} recorded read events?')">
+      <input type="hidden" name="key" value="{{.Key}}">
+      <input type="hidden" name="action" value="clear-history">
+      <button class="btn" type="submit">Clear history</button>
+    </form>
+  </div>
+  <div class="row">
+    <div>
+      <strong>Empty the shelf</strong>
+      <p>Deletes all {{.Entries}} CBZ files and their metadata. Karasu re-uploads whatever it still
+        wants here on its next sync, so this frees the disk rather than vetoing anything.</p>
+    </div>
+    <form method="post" action="/settings" onsubmit="return confirm('Delete all {{.Entries}} chapters from the shelf?')">
+      <input type="hidden" name="key" value="{{.Key}}">
+      <input type="hidden" name="action" value="empty-shelf">
+      <button class="btn" type="submit">Empty shelf</button>
+    </form>
+  </div>
+</section>
 
 </div>
 `))

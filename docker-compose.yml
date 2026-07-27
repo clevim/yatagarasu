@@ -9,12 +9,16 @@ services:
       - "8088:8080"
     volumes:
       - ./data:/data
+    # These are first-run defaults only. Once anything is saved on the Settings
+    # page, /data/settings.json wins and editing them here does nothing.
     environment:
       # Blank (or unset) means an open shelf: only do that on a trusted LAN.
       YATA_API_KEY: "change-me"
       # Set this when behind a reverse proxy — it is what gets baked into the
       # generated plugin, and a wrong value only fails later, on the e-reader.
       # YATA_PUBLIC_URL: "https://yata.example.net"
+      # Only affects timestamps on the web page; also settable from Settings.
+      TZ: America/Sao_Paulo
     # The image runs as root so it can write to a bind-mounted ./data. Pin it
     # to your own uid if you prefer:
     # user: "1000:1000"

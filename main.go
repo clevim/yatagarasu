@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // the scratch image has no /usr/share/zoneinfo
 )
 
 // Entry is the on-disk and on-the-wire shape of one shelf slot.
@@ -44,7 +45,10 @@ type Entry struct {
 	File string `json:"file"`
 }
 
-type shelf struct{ dir string }
+type shelf struct {
+	dir string
+	cfg *config
+}
 
 func (s shelf) cbz(id int64) string {
 	return filepath.Join(s.dir, strconv.FormatInt(id, 10)+".cbz")
@@ -285,9 +289,13 @@ func (s shelf) handleHealth(w http.ResponseWriter, r *http.Request) {
 // auth: a blank key is an intentionally open shelf (LAN behind a firewall),
 // not a misconfiguration. The ?key= form exists so a browser can fetch
 // /plugin.zip without a way to set headers.
-func auth(key string, next http.Handler) http.Handler {
-	want := []byte("Bearer " + key)
+//
+// The key is read per request, not closed over: the settings page can change it
+// and the next request has to use the new one without a restart.
+func auth(cfg *config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := cfg.apiKey()
+		want := []byte("Bearer " + key)
 		if key != "" {
 			got := r.Header.Get("Authorization")
 			if got == "" && r.URL.Query().Get("key") != "" {
@@ -341,7 +349,7 @@ const version = "1"
 // now is a var so tests can freeze it.
 var now = func() int64 { return time.Now().Unix() }
 
-func router(s shelf, key string) http.Handler {
+func router(s shelf) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/shelf", s.handleList)
@@ -349,9 +357,13 @@ func router(s shelf, key string) http.Handler {
 	mux.HandleFunc("DELETE /api/shelf/{chapterId}", s.handleDelete)
 	mux.HandleFunc("GET /api/shelf/{chapterId}/file", s.handleFile)
 	mux.HandleFunc("POST /api/shelf/{chapterId}/read", s.handleRead)
-	mux.HandleFunc("GET /plugin.zip", pluginZipHandler(key))
+	// The browser's delete: an HTML form cannot send DELETE.
+	mux.HandleFunc("POST /api/shelf/{chapterId}/delete", s.handleDeleteForm)
+	mux.HandleFunc("GET /plugin.zip", pluginZipHandler(s.cfg))
+	mux.HandleFunc("GET /settings", s.handleSettings)
+	mux.HandleFunc("POST /settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
-	return auth(key, mux)
+	return auth(s.cfg, mux)
 }
 
 func env(k, def string) string {
@@ -362,15 +374,15 @@ func env(k, def string) string {
 }
 
 func main() {
-	s := shelf{dir: env("YATA_DATA", "/data")}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		log.Fatalf("yata: cannot use data dir %s: %v", s.dir, err)
+	dir := env("YATA_DATA", "/data")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Fatalf("yata: cannot use data dir %s: %v", dir, err)
 	}
-	key := os.Getenv("YATA_API_KEY")
-	if key == "" {
+	s := shelf{dir: dir, cfg: loadConfig(dir)}
+	if s.cfg.apiKey() == "" {
 		log.Print("yata: no API key set, accepting unauthenticated requests")
 	}
 	addr := env("YATA_ADDR", ":8080")
 	log.Printf("yata: listening on %s, data in %s", addr, s.dir)
-	log.Fatal(http.ListenAndServe(addr, router(s, key)))
+	log.Fatal(http.ListenAndServe(addr, router(s)))
 }

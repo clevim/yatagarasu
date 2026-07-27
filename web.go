@@ -46,14 +46,13 @@ type dayBar struct {
 	Today bool
 }
 
-// Chart geometry, in viewBox units.
+// Chart geometry, in viewBox units. The width follows the configured window,
+// so a 7-day and a 30-day chart draw bars of the same thickness.
 const (
-	chartDays  = 14
-	chartStep  = 20
-	chartBarW  = 12
-	chartH     = 60
-	chartMinH  = 3 // a day with activity must never render as empty
-	chartWidth = chartDays * chartStep
+	chartStep = 20
+	chartBarW = 12
+	chartH    = 60
+	chartMinH = 3 // a day with activity must never render as empty
 )
 
 type recentRow struct {
@@ -120,6 +119,8 @@ func chapterNumber(n float64) string {
 func (s shelf) handleIndex(w http.ResponseWriter, r *http.Request) {
 	entries, _ := s.list()
 	events := s.history()
+	loc := s.cfg.location()
+	chartDays := s.cfg.chartDays()
 
 	var totalSize int64
 	var readN int
@@ -149,7 +150,7 @@ func (s shelf) handleIndex(w http.ResponseWriter, r *http.Request) {
 			Size:     humanSize(e.Size),
 			Read:     e.Read,
 			When:     humanTime(when),
-			WhenFull: whenFull + time.Unix(when, 0).Format("2 Jan 2006, 15:04"),
+			WhenFull: whenFull + time.Unix(when, 0).In(loc).Format("2 Jan 2006, 15:04"),
 			num:      e.ChapterNumber,
 		})
 		g.TotalN++
@@ -173,12 +174,12 @@ func (s shelf) handleIndex(w http.ResponseWriter, r *http.Request) {
 		groups = append(groups, g)
 	}
 
-	// Activity: finished chapters per day over the last two weeks.
-	today := dayStart(time.Now())
+	// Activity: finished chapters per day over the configured window.
+	today := dayStart(time.Now().In(loc))
 	counts := make([]int, chartDays)
 	finished7 := 0
 	for _, ev := range events {
-		d := daysBetween(dayStart(time.Unix(ev.At, 0)), today)
+		d := daysBetween(dayStart(time.Unix(ev.At, 0).In(loc)), today)
 		if d >= 0 && d < chartDays {
 			counts[chartDays-1-d]++
 			if d < 7 {
@@ -239,7 +240,7 @@ func (s shelf) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"HasStats":  len(events) > 0,
 		// Chart geometry lives in one place; the template only draws it.
 		"ChartDays": chartDays,
-		"ChartW":    chartWidth,
+		"ChartW":    chartDays * chartStep,
 		"ChartH":    chartH,
 		"BarW":      chartBarW,
 		"ChartFrom": today.AddDate(0, 0, -chartDays+1).Format("2 Jan"),

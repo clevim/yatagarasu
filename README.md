@@ -41,8 +41,26 @@ pick the categories to sync, and press *Test connection*.
 | --- | --- | --- |
 | `YATA_API_KEY` | *(blank)* | Bearer token. **Blank means unauthenticated requests are accepted** — fine on a trusted LAN, nowhere else. |
 | `YATA_PUBLIC_URL` | *(request host)* | The URL clients see. Set it behind a reverse proxy; it is baked into the generated plugin. |
+| `TZ` | `UTC` | Timezone for the timestamps on the web page. |
 | `YATA_DATA` | `/data` | Where CBZ files and metadata live. |
 | `YATA_ADDR` | `:8080` | Listen address. |
+
+### Settings
+
+The first four are first-run defaults. **Settings** on the web page changes them without recreating
+the container, and writes `/data/settings.json`, which wins from then on — editing the environment
+afterwards does nothing.
+
+- **Public URL and API key** — both are baked into the plugin ZIP at the moment it is downloaded, so
+  fixing them here and re-downloading is the whole repair for a plugin that cannot reach the shelf.
+  A key change takes effect on the next request; Karasu and any installed plugin need the new value.
+- **Timezone** — the container runs on UTC, which puts the activity chart's day boundary at 21:00 in
+  Brazil and labels every bar a day early.
+- **Activity chart window** — 7, 14 or 30 days.
+- **Danger zone** — clear the reading history, or empty the shelf. Neither touches anything already
+  downloaded to the e-reader; Karasu re-uploads whatever it still wants on its next sync.
+
+Individual chapters have a **remove** button on the shelf page, next to **undo**.
 
 ### FlareSolverr (optional)
 
@@ -115,11 +133,13 @@ DELETE /api/shelf/{chapterId}         Karasu — 204 even when absent
 GET    /api/shelf/{chapterId}/file    plugin — CBZ, supports Range
 POST   /api/shelf/{chapterId}/read    plugin — idempotent, {"read":false} undoes it
 GET    /plugin.zip                    browser — the plugin, preconfigured
+GET    /settings, POST /settings      browser — the settings page
+POST   /api/shelf/{chapterId}/delete  browser — the remove button; forms cannot send DELETE
 ```
 
-The first four are the frozen contract with Karasu: [`docs/koreader-sync.md`](docs/koreader-sync.md).
-The build plan and the failure modes worth knowing about are in
-[`docs/koreader-shelf-server.md`](docs/koreader-shelf-server.md).
+The first four are the frozen contract with Karasu, specified in `docs/koreader-sync.md` in the
+[Karasu repo](https://github.com/clevim/Karasu) — that copy is the source of truth, and Karasu will
+not change to accommodate this server.
 
 ## Storage
 
@@ -130,7 +150,7 @@ dozen small reads.
 ## Develop
 
 ```sh
-go test ./...          # 14 tests, no dependencies
+go test ./...          # 18 tests, no dependencies
 lua api_test.lua       # the plugin's download path; go test runs it too
 go run .               # YATA_DATA=./data YATA_API_KEY= go run .
 ```

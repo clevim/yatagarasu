@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -18,8 +19,10 @@ import (
 
 func newServer(t *testing.T, key string) (*httptest.Server, shelf) {
 	t.Helper()
-	s := shelf{dir: t.TempDir()}
-	srv := httptest.NewServer(router(s, key))
+	t.Setenv("YATA_API_KEY", key)
+	dir := t.TempDir()
+	s := shelf{dir: dir, cfg: loadConfig(dir)}
+	srv := httptest.NewServer(router(s))
 	t.Cleanup(srv.Close)
 	return srv, s
 }
@@ -371,6 +374,179 @@ func TestIndexPageRendersWholePage(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(b), `class="chart"`) {
 		t.Fatalf("chart missing once there is history:\n%s", b)
+	}
+}
+
+// The settings page is the only way to fix a shelf whose baked-in URL or key is
+// wrong, so a saved key has to take effect on the very next request — and
+// survive a restart, which is what re-reading settings.json stands in for.
+func TestSettingsPersistAndTakeEffect(t *testing.T) {
+	srv, s := newServer(t, "")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.PostForm(srv.URL+"/settings", url.Values{
+		"publicUrl": {"https://yata.example.net/"}, // the slash must not survive
+		"apiKey":    {"s3cret"},
+		"timezone":  {"America/Sao_Paulo"},
+		"chartDays": {"7"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("want 303 after saving, got %d", resp.StatusCode)
+	}
+
+	// the new key is live without a restart
+	resp, _ = http.Get(srv.URL + "/api/health")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the saved key is not enforced yet, got %d", resp.StatusCode)
+	}
+
+	// and it is what the plugin zip gets baked with
+	resp, err = http.Get(srv.URL + "/plugin.zip?key=s3cret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range zr.File {
+		if f.Name != "yata.koplugin/config.lua" {
+			continue
+		}
+		rc, _ := f.Open()
+		cfg, _ := io.ReadAll(rc)
+		rc.Close()
+		if !strings.Contains(string(cfg), `base_url = "https://yata.example.net"`) {
+			t.Errorf("plugin built with the old base_url:\n%s", cfg)
+		}
+		if !strings.Contains(string(cfg), `api_key = "s3cret"`) {
+			t.Errorf("plugin built with the old api_key:\n%s", cfg)
+		}
+	}
+
+	// the page renders whole, with the saved values in it. A template error
+	// aborts mid-write, which looks like a half-drawn form rather than a failure.
+	resp, err = http.Get(srv.URL + "/settings?key=s3cret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	page := string(b)
+	if !strings.HasSuffix(strings.TrimSpace(page), "</div>") {
+		t.Fatalf("settings page is truncated, template aborted:\n%s", page)
+	}
+	for _, want := range []string{`value="https://yata.example.net"`, `value="s3cret"`,
+		`value="America/Sao_Paulo"`, `value="7" checked`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("settings page missing %s", want)
+		}
+	}
+
+	// a restart re-reads the file, and it wins over the environment
+	reloaded := loadConfig(s.dir)
+	if got := reloaded.get(); got.APIKey != "s3cret" || got.PublicURL != "https://yata.example.net" ||
+		got.Timezone != "America/Sao_Paulo" || got.ChartDays != 7 {
+		t.Fatalf("settings.json did not survive: %+v", got)
+	}
+	if got := reloaded.location().String(); got != "America/Sao_Paulo" {
+		t.Fatalf("timezone not loaded, got %q", got)
+	}
+}
+
+// A timezone the container cannot resolve must be refused rather than silently
+// falling back, which would report the wrong days on the chart forever.
+func TestBadTimezoneIsRefusedAndChangesNothing(t *testing.T) {
+	srv, s := newServer(t, "")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.PostForm(srv.URL+"/settings", url.Values{
+		"apiKey":    {"s3cret"},
+		"timezone":  {"Mars/Olympus_Mons"},
+		"chartDays": {"7"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 for an unknown timezone, got %d", resp.StatusCode)
+	}
+	if s.cfg.apiKey() != "" {
+		t.Error("a rejected save applied the other fields anyway")
+	}
+	if _, err := os.Stat(s.cfg.path); !os.IsNotExist(err) {
+		t.Error("a rejected save wrote settings.json")
+	}
+}
+
+func TestChartWindowFollowsSettings(t *testing.T) {
+	srv, s := newServer(t, "")
+	upload(t, srv, "", Entry{ChapterID: 8, ChapterURL: "/x/8", MangaTitle: "Berserk"}, []byte("cbz")).Body.Close()
+	resp, _ := http.Post(srv.URL+"/api/shelf/8/read", "", nil)
+	resp.Body.Close()
+
+	for _, days := range []int{7, 30} {
+		if err := s.cfg.save(settings{ChartDays: days}); err != nil {
+			t.Fatal(err)
+		}
+		resp, _ := http.Get(srv.URL + "/")
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		want := fmt.Sprintf(`viewBox="0 0 %d 60"`, days*chartStep)
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("chart window %d days: %s missing", days, want)
+		}
+	}
+}
+
+// Forms cannot send DELETE, so the web UI's remove button is its own route. It
+// has to drop both files, exactly like the API's DELETE does.
+func TestWebUIRemoveAndDangerZone(t *testing.T) {
+	srv, s := newServer(t, "")
+	upload(t, srv, "", Entry{ChapterID: 8, ChapterURL: "/x/8", MangaTitle: "Berserk"}, []byte("cbz")).Body.Close()
+	upload(t, srv, "", Entry{ChapterID: 9, ChapterURL: "/x/9", MangaTitle: "Berserk"}, []byte("cbz")).Body.Close()
+	resp, _ := http.Post(srv.URL+"/api/shelf/8/read", "", nil)
+	resp.Body.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.PostForm(srv.URL+"/api/shelf/8/delete", url.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("want 303 back to the shelf, got %d", resp.StatusCode)
+	}
+	for _, p := range []string{s.cbz(8), s.meta(8)} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after the remove button", p)
+		}
+	}
+	// history is separate: removing a chapter is a disk decision, not a denial
+	// that it was ever read.
+	if len(s.history()) != 1 {
+		t.Fatalf("removing a chapter dropped its read event: %+v", s.history())
+	}
+
+	resp, _ = client.PostForm(srv.URL+"/settings", url.Values{"action": {"clear-history"}})
+	resp.Body.Close()
+	if h := s.history(); len(h) != 0 {
+		t.Fatalf("history not cleared: %+v", h)
+	}
+
+	resp, _ = client.PostForm(srv.URL+"/settings", url.Values{"action": {"empty-shelf"}})
+	resp.Body.Close()
+	if got := list(t, srv); len(got) != 0 {
+		t.Fatalf("shelf not emptied: %+v", got)
 	}
 }
 
