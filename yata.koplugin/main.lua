@@ -222,7 +222,7 @@ function Yata:editServer()
   dialog = MultiInputDialog:new({
     title = _("Yatagarasu shelf"),
     fields = {
-      { description = _("Shelf address"), text = self.api.base_url, hint = "http://192.168.1.10:8080" },
+      { description = _("Shelf address"), text = self.api.base_url, hint = "http://192.168.1.10:3080" },
       { description = _("API key (blank if none)"), text = self.api.api_key },
     },
     buttons = {

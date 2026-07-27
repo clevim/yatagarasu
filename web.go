@@ -259,7 +259,7 @@ func askForKey(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusUnauthorized)
 	io.WriteString(w, `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Yatagarasu</title>`+baseCSS+`
+<title>Yatagarasu</title>`+baseHead+`
 <style>
   .gate{max-width:22rem;margin:18vh auto;padding:0 1.5rem}
   .gate h1{margin-bottom:.25rem}

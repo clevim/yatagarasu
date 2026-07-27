@@ -382,7 +382,7 @@ func main() {
 	if s.cfg.apiKey() == "" {
 		log.Print("yata: no API key set, accepting unauthenticated requests")
 	}
-	addr := env("YATA_ADDR", ":8080")
+	addr := env("YATA_ADDR", ":3080")
 	log.Printf("yata: listening on %s, data in %s", addr, s.dir)
 	log.Fatal(http.ListenAndServe(addr, router(s)))
 }

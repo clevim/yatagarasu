@@ -1,0 +1,56 @@
+# Paste this into ZimaOS: App Store → "+" → Install a customized app → Import.
+#
+# It is docker-compose.yml minus the things ZimaOS cannot use: no `build:` (it
+# pulls the published image), long-form ports and volumes (the importer's parser
+# is stricter than Docker's), and a bind path under /DATA/AppData where ZimaOS
+# keeps app data so its backups pick it up.
+name: yatagarasu
+
+services:
+  yatagarasu:
+    image: ghcr.io/clevim/yatagarasu:latest
+    container_name: yatagarasu
+    restart: unless-stopped
+    ports:
+      # 3080: 三本足 + 80 — the three-legged crow, on the HTTP port.
+      - target: 3080
+        published: "3080"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: /DATA/AppData/yatagarasu
+        target: /data
+    # First-run defaults only. Once anything is saved on the Settings page,
+    # /data/settings.json wins and editing these does nothing.
+    environment:
+      YATA_API_KEY: change-me
+      TZ: America/Sao_Paulo
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: yatagarasu
+  author: clevim
+  developer: clevim
+  # ZimaOS fetches this at install time, so it has to be a URL, not a path.
+  icon: https://raw.githubusercontent.com/clevim/yatagarasu/master/assets/icon.png
+  category: Media
+  port_map: "3080"
+  index: /
+  title:
+    en_us: Yatagarasu
+  tagline:
+    en_us: KOReader shelf for Karasu
+  description:
+    en_us: >
+      Self-hosted shelf that carries manga chapters from Karasu (Android manga
+      reader) to KOReader on an e-reader, and read state back. Karasu uploads
+      CBZ files here; the KOReader plugin picks them up and reports what was
+      finished.
+  tips:
+    before_install:
+      en_us: |
+        Change YATA_API_KEY before starting: a blank key means the shelf accepts
+        unauthenticated requests. Everything else — public URL, timezone, chart
+        window — is on the Settings page once it is running.

@@ -2,10 +2,18 @@ package main
 
 import "html/template"
 
+// favicon is the 512px assets/icon.png reduced to 64px and inlined: the pages
+// are served from a scratch image with no static file route, and the key gate
+// renders before any ?key= exists, so it cannot fetch one behind auth either.
+const favicon = `
+<link rel="icon" href="data:image/png;base64,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">`
+
+// baseHead is everything the three pages share inside <head>.
+//
 // Yatagarasu is the sun crow, so the shelf is ink with one warm ember accent.
 // The page is read on a phone next to the e-reader, or on a desktop tab left
 // open for a moment — one family, fixed scale, no decoration that is not data.
-const baseCSS = `
+const baseHead = favicon + `
 <style>
  :root{
    --bg:oklch(0.97 0.006 55); --surface:oklch(1 0.002 55); --raise:oklch(0.99 0.004 55);
@@ -58,7 +66,7 @@ const baseCSS = `
 
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Yatagarasu — shelf</title>` + baseCSS + `
+<title>Yatagarasu — shelf</title>` + baseHead + `
 <style>
  .wrap{max-width:60rem;margin:0 auto;padding:2rem 1.25rem 4rem}
  header.top{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between;margin-bottom:1.75rem}
@@ -231,7 +239,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 
 var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Yatagarasu — settings</title>` + baseCSS + `
+<title>Yatagarasu — settings</title>` + baseHead + `
 <style>
  .wrap{max-width:38rem;margin:0 auto;padding:2rem 1.25rem 4rem}
  header.top{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between;margin-bottom:1.5rem}
@@ -285,7 +293,7 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
     <h2>How clients reach this shelf</h2>
     <p class="hint">Both are baked into the plugin ZIP the moment it is downloaded.</p>
     <label class="field"><span>Public URL</span>
-      <input name="publicUrl" value="{{.PublicURL}}" placeholder="http://192.168.0.10:8088"
+      <input name="publicUrl" value="{{.PublicURL}}" placeholder="http://192.168.0.10:3080"
              inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
       <em class="note">Leave blank to use whatever host the browser asked for. Set it behind a reverse
         proxy, or the plugin gets a base_url that only fails on the e-reader.</em>

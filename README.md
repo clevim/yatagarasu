@@ -1,3 +1,5 @@
+<img src="assets/icon.png" alt="" width="120" align="right">
+
 # Yatagarasu
 
 Self-hosted shelf that carries manga chapters from [Karasu](https://github.com/clevim/Karasu)
@@ -24,7 +26,7 @@ services:
   yatagarasu:
     image: ghcr.io/clevim/yatagarasu:latest
     restart: unless-stopped
-    ports: ["8080:8080"]
+    ports: ["3080:3080"]
     volumes: ["./data:/data"]
     environment:
       YATA_API_KEY: "change-me"
@@ -34,8 +36,11 @@ services:
 docker compose up -d
 ```
 
-Then in Karasu: **Settings → Yatagarasu**, shelf address `http://<host>:8080`, the same API key,
+Then in Karasu: **Settings → Yatagarasu**, shelf address `http://<host>:3080`, the same API key,
 pick the categories to sync, and press *Test connection*.
+
+Port **3080** is 三本足 + 80 — the crow's three legs on the HTTP port. It stays clear of the usual
+homelab occupants (8080, 8096 Jellyfin, 8123 Home Assistant, 9000 Portainer).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -43,7 +48,7 @@ pick the categories to sync, and press *Test connection*.
 | `YATA_PUBLIC_URL` | *(request host)* | The URL clients see. Set it behind a reverse proxy; it is baked into the generated plugin. |
 | `TZ` | `UTC` | Timezone for the timestamps on the web page. |
 | `YATA_DATA` | `/data` | Where CBZ files and metadata live. |
-| `YATA_ADDR` | `:8080` | Listen address. |
+| `YATA_ADDR` | `:3080` | Listen address. |
 
 ### Settings
 
@@ -62,6 +67,15 @@ afterwards does nothing.
 
 Individual chapters have a **remove** button on the shelf page, next to **undo**.
 
+### ZimaOS / CasaOS
+
+`zimaos.yml` is the same thing in the shape the App Store importer accepts: **App Store → + →
+Install a customized app → Import**, paste the file. It differs from the compose above only in
+mechanics — no `build:`, long-form ports and volumes, and data under `/DATA/AppData/yatagarasu` so
+ZimaOS's own backups include it.
+
+The image is public on GHCR, so nothing has to log in to pull it.
+
 ### FlareSolverr (optional)
 
 Nothing here needs it — it is in the compose file because Karasu does, and this is the machine that
@@ -75,7 +89,7 @@ Then in Karasu: **Settings → Advanced → FlareSolverr URL**, `http://<host>:8
 
 ## Install the KOReader plugin
 
-Open `http://<host>:8080/` in a browser and click **Download the KOReader plugin**. The ZIP is
+Open `http://<host>:3080/` in a browser and click **Download the KOReader plugin**. The ZIP is
 generated per request and already contains this server's address and API key, so nothing has to be
 typed on an e-ink keyboard.
 
@@ -157,6 +171,19 @@ go run .               # YATA_DATA=./data YATA_API_KEY= go run .
 
 `TestChapterURLSurvivesRoundTrip` is the contract's enforcement: Karasu refuses to mark a chapter
 read unless `chapterUrl` comes back byte for byte. Do not weaken it.
+
+### Publishing
+
+`.github/workflows/publish.yml` runs the tests, then builds `linux/amd64` and `linux/arm64` and
+pushes to `ghcr.io/clevim/yatagarasu`. Every push to `master` moves `:latest`; a `v1.2.3` tag also
+publishes `1.2.3` and `1.2`.
+
+```sh
+git tag v1.0.0 && git push --tags
+```
+
+The package is private the first time it is created — flip it under *Package settings → Change
+visibility → Public*, or the NAS needs a `docker login ghcr.io` to pull.
 
 ## License
 

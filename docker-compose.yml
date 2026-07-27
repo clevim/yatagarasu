@@ -5,8 +5,8 @@ services:
     container_name: yatagarasu
     restart: unless-stopped
     ports:
-      # host:container — 8080 no host já é de outro projeto aqui
-      - "8088:8080"
+      # 3080: 三本足 + 80 — the three-legged crow, on the HTTP port.
+      - "3080:3080"
     volumes:
       - ./data:/data
     # These are first-run defaults only. Once anything is saved on the Settings
