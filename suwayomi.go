@@ -924,7 +924,7 @@ func (c *suwayomiClient) controlDownloader(ctx context.Context, action string) e
 func (c *suwayomiClient) startLibraryUpdate(ctx context.Context) error {
 	mut := `mutation UpdateLibrary {
 		updateLibrary(input: {}) {
-			updateStatus { isRunning }
+			updateStatus { jobsInfo { isRunning } }
 		}
 	}`
 	return c.graphql(ctx, mut, nil, nil)
@@ -1355,11 +1355,11 @@ func (c *suwayomiClient) getSourcePreferences(ctx context.Context, sourceID stri
 			displayName
 			preferences {
 				__typename
-				... on CheckBoxPreference { CheckBoxPreferenceTitle title summary CheckBoxPreferenceCurrentValue }
-				... on SwitchPreference { SwitchPreferenceTitle title summary SwitchPreferenceCurrentValue }
-				... on ListPreference { ListPreferenceTitle title summary entries entryValues ListPreferenceCurrentValue }
-				... on MultiSelectListPreference { MultiSelectListPreferenceTitle title summary entries entryValues MultiSelectListPreferenceCurrentValue }
-				... on EditTextPreference { EditTextPreferenceTitle title summary EditTextPreferenceCurrentValue }
+				... on CheckBoxPreference { title summary CheckBoxPreferenceCurrentValue: currentValue }
+				... on SwitchPreference { title summary SwitchPreferenceCurrentValue: currentValue }
+				... on ListPreference { title summary entries entryValues ListPreferenceCurrentValue: currentValue }
+				... on MultiSelectListPreference { title summary entries entryValues MultiSelectListPreferenceCurrentValue: currentValue }
+				... on EditTextPreference { title summary EditTextPreferenceCurrentValue: currentValue }
 			}
 		}
 	}`
@@ -1416,15 +1416,19 @@ func (c *suwayomiClient) getSourcePreferences(ctx context.Context, sourceID stri
 }
 
 func (c *suwayomiClient) updateSourcePreference(ctx context.Context, sourceID string, position int, change map[string]any) error {
-	mut := `mutation UpdateSourcePreference($source: LongString!, $position: Int!, $change: PreferenceChangeInput!) {
-		updateSourcePreference(input: { source: $source, position: $position, change: $change }) {
+	payload := make(map[string]any, len(change)+1)
+	for k, v := range change {
+		payload[k] = v
+	}
+	payload["position"] = position
+	mut := `mutation UpdateSourcePreference($source: LongString!, $change: SourcePreferenceChangeInput!) {
+		updateSourcePreference(input: { source: $source, change: $change }) {
 			source { id }
 		}
 	}`
 	return c.graphql(ctx, mut, map[string]any{
-		"source":   sourceID,
-		"position": position,
-		"change":   change,
+		"source": sourceID,
+		"change": payload,
 	}, nil)
 }
 
@@ -1599,9 +1603,8 @@ func (c *suwayomiClient) listRecentUpdates(ctx context.Context, limit int) ([]Su
 	}
 	q := `query RecentUpdates($first: Int!) {
 		chapters(
-			condition: { inLibrary: true }
-			orderBy: FETCHED_AT
-			orderByType: DESC
+			filter: { inLibrary: { equalTo: true } }
+			order: [{ by: FETCHED_AT, byType: DESC }]
 			first: $first
 		) {
 			nodes {
@@ -1842,8 +1845,7 @@ func (c *suwayomiClient) listReadHistory(ctx context.Context, limit int) ([]Suwa
 	q := `query ReadHistory($first: Int!) {
 		chapters(
 			filter: { lastReadAt: { greaterThan: "0" } }
-			orderBy: LAST_READ_AT
-			orderByType: DESC
+			order: [{ by: LAST_READ_AT, byType: DESC }]
 			first: $first
 		) {
 			nodes {

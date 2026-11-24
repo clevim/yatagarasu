@@ -525,7 +525,7 @@ func newMockSuwayomiWebUI(t *testing.T) (*httptest.Server, *atomic.Bool, *atomic
 
 		case strings.Contains(gql.Query, "UpdateLibrary"):
 			libUpdates.Add(1)
-			writeJSON(w, map[string]any{"data": map[string]any{"updateLibrary": map[string]any{"updateStatus": map[string]any{"isRunning": true}}}})
+			writeJSON(w, map[string]any{"data": map[string]any{"updateLibrary": map[string]any{"updateStatus": map[string]any{"jobsInfo": map[string]any{"isRunning": true}}}}})
 
 		case strings.Contains(gql.Query, "EnqueueDownload"), strings.Contains(gql.Query, "DeleteDownload"), strings.Contains(gql.Query, "DequeueDownload"):
 			writeJSON(w, map[string]any{"data": map[string]any{}})
@@ -1392,10 +1392,10 @@ func TestSourcePreferencesGetAndUpdate(t *testing.T) {
 		case strings.Contains(gql.Query, "UpdateSourcePreference"):
 			mu.Lock()
 			lastSource, _ = gql.Variables["source"].(string)
-			if p, ok := gql.Variables["position"].(float64); ok {
+			lastChange, _ = gql.Variables["change"].(map[string]any)
+			if p, ok := lastChange["position"].(float64); ok {
 				lastPos = int(p)
 			}
-			lastChange, _ = gql.Variables["change"].(map[string]any)
 			mu.Unlock()
 			writeJSON(w, map[string]any{"data": map[string]any{"updateSourcePreference": map[string]any{"source": map[string]any{"id": "101"}}}})
 		}
