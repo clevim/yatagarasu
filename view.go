@@ -50,26 +50,50 @@ const baseHead = favicon + `
       background:var(--raise);border:1px solid var(--line);border-radius:.3rem;padding:.1rem .35rem}
  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
 
- .wrap{max-width:64rem;margin:0 auto;padding:1.5rem 1.25rem 4rem}
- .wrap.narrow{max-width:52rem}
+ .wrap{max-width:78rem;margin:0 auto;padding:1.5rem 1.5rem 4rem}
+ .wrap.narrow{max-width:54rem}
 
- /* Shell navigation */
- .topbar{display:flex;flex-wrap:wrap;gap:.75rem 1rem;align-items:center;justify-content:space-between;
-         padding-bottom:1rem;border-bottom:1px solid var(--line);margin-bottom:1.5rem}
+ /* Shell navigation: fixed PC-companion left sidebar on desktop, compact topbar on mobile */
+ .sidebar{display:flex;flex-wrap:wrap;gap:.65rem 1rem;align-items:center;justify-content:space-between;
+          padding-bottom:1rem;border-bottom:1px solid var(--line);margin-bottom:1.5rem}
  .brand{display:flex;align-items:baseline;gap:.45rem;text-decoration:none;color:var(--ink);white-space:nowrap}
  .brand h1{display:flex;align-items:center;gap:.35rem;font-size:1.2rem}
+ .brand-sub{display:none;font-size:.72rem;color:var(--muted);margin-top:.15rem}
  .crow{color:var(--accent);font-weight:700}
  .ver{font-size:.68rem;font-weight:600;color:var(--muted);border:1px solid var(--line);
       border-radius:999px;padding:.05rem .4rem;font-variant-numeric:tabular-nums}
- .nav{display:flex;flex-wrap:wrap;gap:.12rem;align-items:center}
- .nav a{display:inline-flex;align-items:center;gap:.28rem;padding:.34rem .48rem;border-radius:var(--radius);
-        text-decoration:none;color:var(--muted);font-size:.825rem;font-weight:530;white-space:nowrap;
-        border:1px solid transparent;transition:background 140ms var(--ease),color 140ms var(--ease)}
+ .nav{display:flex;flex-wrap:wrap;gap:.15rem;align-items:center}
+ .nav-group{display:none;font-size:.68rem;font-weight:650;letter-spacing:.06em;text-transform:uppercase;
+            color:var(--muted);padding:.9rem .65rem .3rem;opacity:.8}
+ .nav a{display:inline-flex;align-items:center;justify-content:space-between;gap:.4rem;padding:.38rem .58rem;
+        border-radius:var(--radius);text-decoration:none;color:var(--muted);font-size:.84rem;font-weight:530;
+        white-space:nowrap;border:1px solid transparent;transition:background 140ms var(--ease),color 140ms var(--ease)}
  .nav a:hover{color:var(--ink);background:var(--surface)}
  .nav a.active{color:var(--ink);background:var(--surface);border-color:var(--line);font-weight:600}
  .nav a.active .pill{background:var(--accent-soft);color:var(--accent)}
- .pill{font-size:.7rem;font-variant-numeric:tabular-nums;padding:.02rem .36rem;border-radius:999px;
+ .pill{font-size:.7rem;font-variant-numeric:tabular-nums;padding:.02rem .38rem;border-radius:999px;
        background:var(--raise);color:var(--muted);font-weight:600}
+ .side-foot{display:none}
+ @media (min-width:58rem){
+   body:has(.sidebar){padding-left:14rem}
+   .sidebar{position:fixed;top:0;left:0;bottom:0;width:14rem;z-index:20;
+            flex-direction:column;flex-wrap:nowrap;align-items:stretch;justify-content:flex-start;
+            gap:0;margin:0;padding:1.25rem .85rem 1rem;border-bottom:0;border-right:1px solid var(--line);
+            background:var(--surface);overflow-y:auto}
+   .sidebar .brand{flex-direction:column;align-items:flex-start;gap:0;padding:0 .55rem .9rem;
+                   border-bottom:1px solid var(--line);margin-bottom:.35rem}
+   .sidebar .brand-row{display:flex;align-items:baseline;gap:.45rem}
+   .sidebar .brand-sub{display:block}
+   .sidebar .nav{flex-direction:column;align-items:stretch;gap:.12rem;flex:1}
+   .sidebar .nav-group{display:block}
+   .sidebar .nav a{padding:.48rem .65rem;font-size:.875rem}
+   .sidebar .nav a:hover{background:var(--raise)}
+   .sidebar .nav a.active{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+   .sidebar .nav a.active .pill{background:var(--accent-solid);color:var(--on-accent)}
+   .side-foot{display:flex;flex-direction:column;gap:.3rem;padding:.75rem .6rem .1rem;margin-top:auto;
+              border-top:1px solid var(--line);font-size:.74rem;color:var(--muted)}
+   .side-foot .srow{display:flex;align-items:center;justify-content:space-between;gap:.4rem}
+ }
 
  /* Buttons & forms */
  .btn{
@@ -166,22 +190,28 @@ const baseHead = favicon + `
 </style>`
 
 const navHeader = `
-<header class="topbar">
-  <a class="brand" href="/">
-    <h1><span class="crow">八</span> Yatagarasu</h1>
-    <span class="ver">v{{.Nav.Version}}</span>
+<aside class="sidebar">
+  <a class="brand" href="/library">
+    <div class="brand-row"><h1><span class="crow">八</span> Yatagarasu</h1><span class="ver">v{{.Nav.Version}}</span></div>
+    <span class="brand-sub">Karasu PC Companion</span>
   </a>
   <nav class="nav" aria-label="Main">
-    <a href="/"{{if eq .Nav.Active "shelf"}} class="active"{{end}}>Shelf{{if .Nav.ShelfCount}} <span class="pill">{{.Nav.ShelfCount}}</span>{{end}}</a>
-    <a href="/library"{{if eq .Nav.Active "library"}} class="active"{{end}}>Library{{if .Nav.LibraryCount}} <span class="pill">{{.Nav.LibraryCount}}</span>{{end}}</a>
-    <a href="/updates"{{if eq .Nav.Active "updates"}} class="active"{{end}}>Updates</a>
-    <a href="/browse"{{if eq .Nav.Active "browse"}} class="active"{{end}}>Browse</a>
-    <a href="/downloads"{{if eq .Nav.Active "downloads"}} class="active"{{end}}>Downloads</a>
-    <a href="/translate"{{if eq .Nav.Active "translate"}} class="active"{{end}}>Translate</a>
-    <a href="/backups"{{if eq .Nav.Active "backups"}} class="active"{{end}}>Backups</a>
-    <a href="/settings"{{if eq .Nav.Active "settings"}} class="active"{{end}}>Settings</a>
+    <span class="nav-group">Reader</span>
+    <a href="/library"{{if eq .Nav.Active "library"}} class="active"{{end}}><span>Library</span>{{if .Nav.LibraryCount}}<span class="pill">{{.Nav.LibraryCount}}</span>{{end}}</a>
+    <a href="/updates"{{if eq .Nav.Active "updates"}} class="active"{{end}}><span>Updates</span></a>
+    <a href="/browse"{{if eq .Nav.Active "browse"}} class="active"{{end}}><span>Browse</span></a>
+    <a href="/downloads"{{if eq .Nav.Active "downloads"}} class="active"{{end}}><span>Downloads</span></a>
+    <span class="nav-group">Companion</span>
+    <a href="/"{{if eq .Nav.Active "shelf"}} class="active"{{end}}><span>KOReader Shelf</span>{{if .Nav.ShelfCount}}<span class="pill">{{.Nav.ShelfCount}}</span>{{end}}</a>
+    <a href="/translate"{{if eq .Nav.Active "translate"}} class="active"{{end}}><span>Translate</span>{{if .Nav.CacheCount}}<span class="pill">{{.Nav.CacheCount}}</span>{{end}}</a>
+    <a href="/backups"{{if eq .Nav.Active "backups"}} class="active"{{end}}><span>Backups</span>{{if .Nav.BackupsCount}}<span class="pill">{{.Nav.BackupsCount}}</span>{{end}}</a>
+    <a href="/settings"{{if eq .Nav.Active "settings"}} class="active"{{end}}><span>Settings</span></a>
   </nav>
-</header>`
+  <div class="side-foot">
+    <div class="srow"><span>Suwayomi</span>{{if .Nav.Suwayomi.Reachable}}<span class="dot ok">online</span>{{else if .Nav.Suwayomi.Configured}}<span class="dot warn">offline</span>{{else}}<span class="dot off">off</span>{{end}}</div>
+    <div class="srow"><span>Translator</span>{{if .Nav.Translate.Configured}}<span class="dot ok">{{.Nav.Translate.Provider}}</span>{{else}}<span class="dot off">cache</span>{{end}}</div>
+  </div>
+</aside>`
 
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -336,41 +366,66 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 <style>
  .lib-head{display:flex;flex-wrap:wrap;gap:.65rem;align-items:center;justify-content:space-between;margin-bottom:1rem}
  .lib-controls{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;flex:1;justify-content:flex-end}
- .lib-search{padding:.4rem .7rem;font:inherit;font-size:.85rem;color:var(--ink);background:var(--surface);
-             border:1px solid var(--line);border-radius:var(--radius);min-width:12rem;max-width:18rem;flex:1}
+ .lib-bar{display:flex;flex-wrap:wrap;gap:.75rem 1rem;align-items:center;justify-content:space-between;margin-bottom:.75rem}
+ .lib-bar-title{display:flex;align-items:baseline;gap:.55rem}
+ .lib-bar-title h1{font-size:1.35rem}
+ .lib-controls{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}
+ .lib-search{padding:.42rem .75rem;font:inherit;font-size:.85rem;color:var(--ink);background:var(--surface);
+             border:1px solid var(--line);border-radius:var(--radius);width:14.5rem}
  .lib-search:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+ .chip-btn{padding:.36rem .65rem;font:inherit;font-size:.8rem;font-weight:540;border-radius:var(--radius);
+           border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer}
+ .chip-btn:hover{border-color:var(--muted);color:var(--ink)}
+ .chip-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
  .view-seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
- .view-seg button{padding:.36rem .65rem;font:inherit;font-size:.8125rem;font-weight:540;border:0;border-right:1px solid var(--line);
+ .view-seg button{padding:.36rem .6rem;font:inherit;font-size:.78rem;font-weight:540;border:0;border-right:1px solid var(--line);
                   background:transparent;color:var(--muted);cursor:pointer}
  .view-seg button:last-child{border-right:0}
  .view-seg button:hover{color:var(--ink);background:var(--raise)}
  .view-seg button.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
- .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.15rem}
- .filters a{padding:.3rem .68rem;border-radius:999px;border:1px solid var(--line);
-            background:var(--surface);color:var(--muted);font-size:.8125rem;text-decoration:none}
- .filters a:hover{border-color:var(--muted);color:var(--ink)}
- .filters a.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
- .lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.4rem,1fr));gap:1.05rem .9rem;margin-bottom:1.35rem}
+
+ /* Karasu / Suwayomi category underline tabs */
+ .cat-tabs{display:flex;gap:.15rem;overflow-x:auto;border-bottom:1px solid var(--line);margin-bottom:1.15rem}
+ .cat-tabs a{padding:.55rem .9rem;text-decoration:none;color:var(--muted);font-size:.875rem;font-weight:540;
+             white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px;
+             transition:color 140ms var(--ease),border-color 140ms var(--ease)}
+ .cat-tabs a:hover{color:var(--ink)}
+ .cat-tabs a.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:620}
+
+ /* Cover grid: Compact (overlay title like Suwayomi/Karasu) & Comfortable (title below) */
+ .lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.6rem,1fr));gap:.95rem}
+ @media (min-width:72rem){.lib-grid{grid-template-columns:repeat(auto-fill,minmax(10.5rem,1fr));gap:1.05rem}}
  .lib-card{display:flex;flex-direction:column;text-decoration:none;color:var(--ink)}
  .lib-card.hidden,.lib-row.hidden{display:none}
  .lib-cover{position:relative;aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;
-            background:var(--raise);border:1px solid var(--line);margin-bottom:.42rem;
-            transition:transform 150ms var(--ease),border-color 150ms var(--ease)}
- a.lib-card:hover .lib-cover{transform:translateY(-2px);border-color:var(--accent)}
- .lib-cover img{width:100%;height:100%;object-fit:cover;display:block}
+            background:var(--raise);border:1px solid var(--line);
+            transition:border-color 150ms var(--ease),box-shadow 150ms var(--ease)}
+ a.lib-card:hover .lib-cover{border-color:var(--accent);box-shadow:0 6px 20px oklch(0 0 0 / .28)}
+ .lib-cover img{width:100%;height:100%;object-fit:cover;display:block;transition:transform 220ms var(--ease)}
+ a.lib-card:hover .lib-cover img{transform:scale(1.03)}
  .lib-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;
-                  font-size:2.2rem;font-weight:650;color:var(--muted);background:var(--raise)}
- .lib-badges{position:absolute;top:.4rem;left:.4rem;display:flex;gap:.25rem;flex-wrap:wrap}
- .badge{padding:.1rem .44rem;border-radius:.32rem;font-size:.7rem;font-weight:650;font-variant-numeric:tabular-nums;
-        line-height:1.35;box-shadow:0 1px 4px oklch(0 0 0 / .32)}
+                  font-size:2.4rem;font-weight:650;color:var(--muted);background:var(--raise)}
+ /* Joined Karasu/Suwayomi unread + downloaded badge */
+ .lib-badges{position:absolute;top:.45rem;left:.45rem;display:inline-flex;border-radius:.35rem;overflow:hidden;
+             box-shadow:0 2px 6px oklch(0 0 0 / .45)}
+ .badge{padding:.12rem .45rem;font-size:.72rem;font-weight:680;font-variant-numeric:tabular-nums;line-height:1.35}
  .badge.unread{background:var(--accent-solid);color:var(--on-accent)}
- .badge.dl{background:var(--ok);color:oklch(0.16 0.02 155)}
- .lib-title{font-size:.84rem;font-weight:560;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;
-            -webkit-box-orient:vertical;overflow:hidden}
- .lib-sub{font-size:.72rem;color:var(--muted);margin-top:.12rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .badge.dl{background:var(--ok);color:oklch(0.15 0.02 155)}
+ /* Overlay title in Compact mode (default, matching Karasu/Suwayomi) */
+ .lib-overlay{position:absolute;left:0;right:0;bottom:0;padding:1.75rem .55rem .5rem;
+              background:linear-gradient(to top,rgba(12,10,9,.92) 0%,rgba(12,10,9,.55) 58%,transparent 100%);
+              color:#f6f1ea;font-size:.84rem;font-weight:600;line-height:1.28;text-shadow:0 1px 2px rgba(0,0,0,.8)}
+ .lib-overlay span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+ .lib-below{display:none;margin-top:.4rem}
+ .lib-below .lib-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+                       font-size:.84rem;font-weight:580;line-height:1.3}
+ .lib-below .lib-sub{display:block;font-size:.72rem;color:var(--muted);margin-top:.1rem;
+                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .lib-wrap.comfy-mode .lib-overlay{display:none}
+ .lib-wrap.comfy-mode .lib-below{display:block}
  .lib-link{color:var(--ink);text-decoration:none;font-weight:560}
  .lib-link:hover{color:var(--accent)}
- .lib-mini{width:28px;height:40px;border-radius:.25rem;object-fit:cover;vertical-align:middle;margin-right:.55rem;background:var(--raise)}
+ .lib-mini{width:30px;height:44px;border-radius:.25rem;object-fit:cover;vertical-align:middle;margin-right:.6rem;background:var(--raise)}
  .lib-title-cell{display:inline-flex;align-items:center}
  .lib-view-list{display:none}
  .lib-wrap.list-mode .lib-grid{display:none}
@@ -379,11 +434,6 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
  .bar-bg{flex:1;height:5px;background:var(--line);border-radius:999px;overflow:hidden}
  .bar-fg{height:100%;background:var(--accent-solid);border-radius:999px}
  .prog span{font-size:.78rem;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
- .meta-grid{display:grid;grid-template-columns:1fr;gap:1.25rem}
- @media (min-width:48rem){.meta-grid{grid-template-columns:1fr 1fr}}
- .plain-list{list-style:none;margin:0;padding:0;font-size:.85rem}
- .plain-list li{display:flex;justify-content:space-between;gap:.75rem;padding:.45rem 0;border-bottom:1px solid var(--line);word-break:break-all}
- .plain-list li:last-child{border-bottom:0}
 </style>
 <body><div class="wrap">
 ` + navHeader + `
@@ -391,42 +441,38 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 {{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
 {{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
 
-<div class="stats">
-  <div class="stat"><b>{{.TotalMangas}}</b><span>library manga</span></div>
-  <div class="stat"><b>{{len .Categories}}</b><span>categories</span></div>
-  <div class="stat"><b>{{.ReadChapters}} / {{.TotalChapters}}</b><span>chapters read</span></div>
-  <div class="stat"><b>{{.MergedTotal}}</b><span>merged sources</span></div>
-  <div class="stat"><b>{{.LastSync}}</b><span>last reconcile</span></div>
-</div>
-
-<div class="lib-head">
-  <div>
-    <h2>Library{{if .SelectedCat}} · {{.SelectedCat}}{{end}} <span class="pill" id="libCount">{{len .Mangas}}</span></h2>
+<div class="lib-bar">
+  <div class="lib-bar-title">
+    <h1>Library{{if .SelectedCat}} · {{.SelectedCat}}{{end}}</h1>
+    <span class="pill" id="libCount">{{len .Mangas}}</span>
   </div>
   <div class="lib-controls">
-    <input class="lib-search" id="libFilter" type="search" placeholder="Filter library..." aria-label="Filter library">
-    <div class="view-seg" role="group" aria-label="View mode">
-      <button type="button" id="btnGrid" class="active">Grid</button>
+    <input class="lib-search" id="libFilter" type="search" placeholder="Search library..." aria-label="Search library">
+    <button type="button" class="chip-btn" id="btnUnread">Unread</button>
+    <button type="button" class="chip-btn" id="btnDownloaded">Downloaded</button>
+    <div class="view-seg" role="group" aria-label="Display mode">
+      <button type="button" id="btnCompact" class="active">Compact</button>
+      <button type="button" id="btnComfy">Comfy</button>
       <button type="button" id="btnList">List</button>
     </div>
     {{if .SuwayomiConnected}}
-    <a class="btn sm" href="/categories">Manage Categories</a>
+    <a class="btn sm" href="/categories">Categories</a>
     <form method="post" action="/downloads/control" style="margin:0">
       <input type="hidden" name="action" value="update-library">
       <input type="hidden" name="redirect" value="/library">
-      <button class="btn sm primary" type="submit">Update Library</button>
+      <button class="btn sm primary" type="submit">Update</button>
     </form>
     {{end}}
   </div>
 </div>
 
 {{if .Categories}}
-<div class="filters">
+<nav class="cat-tabs" aria-label="Categories">
   <a href="/library"{{if eq .SelectedCat ""}} class="active"{{end}}>All ({{.TotalMangas}})</a>
   {{range .Categories}}
   <a href="/library?cat={{.Name}}"{{if eq $.SelectedCat .Name}} class="active"{{end}}>{{.Name}}</a>
   {{end}}
-</div>
+</nav>
 {{end}}
 
 {{if .Mangas}}
@@ -434,9 +480,9 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
   <div class="lib-grid" id="libGrid">
     {{range .Mangas}}
     {{if gt .SuwayomiID 0}}
-    <a class="lib-card" href="/manga/{{.SuwayomiID}}" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}">
+    <a class="lib-card" href="/manga/{{.SuwayomiID}}" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}" data-unread="{{.UnreadCount}}" data-dl="{{.DownloadCount}}">
     {{else}}
-    <div class="lib-card" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}">
+    <div class="lib-card" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}" data-unread="{{.UnreadCount}}" data-dl="{{.DownloadCount}}">
     {{end}}
       <div class="lib-cover">
         {{if .ThumbnailURL}}<img src="{{.ThumbnailURL}}" alt="{{.Title}}" loading="lazy">{{else}}<div class="lib-placeholder">{{.Initial}}</div>{{end}}
@@ -446,23 +492,22 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
           {{if gt .DownloadCount 0}}<span class="badge dl" title="{{.DownloadCount}} downloaded">{{.DownloadCount}}</span>{{end}}
         </div>
         {{end}}
+        <div class="lib-overlay"><span>{{.Title}}</span></div>
       </div>
-      <span class="lib-title">{{.Title}}</span>
-      {{if .Categories}}<span class="lib-sub">{{range $i, $c := .Categories}}{{if $i}} · {{end}}{{$c}}{{end}}</span>{{end}}
+      <div class="lib-below">
+        <span class="lib-title">{{.Title}}</span>
+        {{if .Categories}}<span class="lib-sub">{{range $i, $c := .Categories}}{{if $i}} · {{end}}{{$c}}{{end}}</span>{{end}}
+      </div>
     {{if gt .SuwayomiID 0}}</a>{{else}}</div>{{end}}
     {{end}}
   </div>
 
   <section class="card-table lib-view-list">
-    <header>
-      <h2>Library{{if .SelectedCat}} · {{.SelectedCat}}{{end}}</h2>
-      <p>{{len .Mangas}} {{if eq (len .Mangas) 1}}title{{else}}titles{{end}}</p>
-    </header>
     <table>
       <thead><tr><th>Title</th><th>Categories</th><th>Progress</th><th class="size">Unread / DL</th><th>Updated</th></tr></thead>
       <tbody>
         {{range .Mangas}}
-        <tr class="lib-row" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}">
+        <tr class="lib-row" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}" data-unread="{{.UnreadCount}}" data-dl="{{.DownloadCount}}">
           <td>
             <span class="lib-title-cell">
               {{if .ThumbnailURL}}<img class="lib-mini" src="{{.ThumbnailURL}}" alt="" loading="lazy">{{end}}
@@ -477,7 +522,7 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
             </div>
           </td>
           <td class="size">
-            {{if gt .UnreadCount 0}}<span class="tag accent">{{.UnreadCount}} unread</span> {{end}}
+            {{if gt .UnreadCount 0}}<span class="tag accent">{{.UnreadCount}}</span> {{end}}
             {{if gt .DownloadCount 0}}<span class="tag">{{.DownloadCount}} dl</span>{{end}}
             {{if and (eq .UnreadCount 0) (eq .DownloadCount 0)}}—{{end}}
           </td>
@@ -490,72 +535,67 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 </div>
 {{else}}
 <section class="empty">
-  <h2>No library titles yet</h2>
+  <h2>Your library is empty</h2>
   <p>{{if .SuwayomiConnected}}Add manga from <a href="/browse">Browse</a> or sync from Karasu under <em>Settings → Yatagarasu</em>.{{else}}Connect Suwayomi in <a href="/settings#suwayomi">Settings</a> or enable <strong>Sync library, progress &amp; extensions</strong> in Karasu.{{end}}</p>
 </section>
 {{end}}
-
-<div class="meta-grid" style="margin-top:1.25rem">
-  <section class="panel" style="margin-bottom:0">
-    <div class="panel-head"><h2>Extension repositories</h2><span class="pill">{{len .Repos}}</span></div>
-    {{if .Repos}}
-    <ul class="plain-list">{{range .Repos}}<li><code>{{.}}</code></li>{{end}}</ul>
-    {{else}}<p class="hint">No extension repositories synced yet.</p>{{end}}
-  </section>
-
-  <section class="panel" style="margin-bottom:0">
-    <div class="panel-head"><h2>Known extensions</h2><span class="pill">{{len .Extensions}}</span></div>
-    {{if .Extensions}}
-    <ul class="plain-list">
-      {{range .Extensions}}<li><span><strong>{{.Name}}</strong> <span class="tag muted">{{.Lang}}</span></span><span class="hint">v{{.VersionCode}}</span></li>{{end}}
-    </ul>
-    {{else}}<p class="hint">No extensions reported by connected devices yet.</p>{{end}}
-  </section>
-</div>
 
 </div>
 <script nonce="{{.Nonce}}">
 (function(){
   const wrap = document.getElementById("libWrap");
   const filter = document.getElementById("libFilter");
-  const btnGrid = document.getElementById("btnGrid");
+  const btnCompact = document.getElementById("btnCompact");
+  const btnComfy = document.getElementById("btnComfy");
   const btnList = document.getElementById("btnList");
+  const btnUnread = document.getElementById("btnUnread");
+  const btnDownloaded = document.getElementById("btnDownloaded");
   const countEl = document.getElementById("libCount");
   const cards = Array.from(document.querySelectorAll(".lib-card"));
   const rows = Array.from(document.querySelectorAll(".lib-row"));
+  let onlyUnread = false;
+  let onlyDl = false;
 
   function setView(v) {
     if (!wrap) return;
-    const isList = v === "list";
-    wrap.classList.toggle("list-mode", isList);
-    if (btnGrid) btnGrid.classList.toggle("active", !isList);
-    if (btnList) btnList.classList.toggle("active", isList);
-    try { localStorage.setItem("yata_library_view", isList ? "list" : "grid"); } catch (e) {}
+    wrap.classList.toggle("comfy-mode", v === "comfy");
+    wrap.classList.toggle("list-mode", v === "list");
+    if (btnCompact) btnCompact.classList.toggle("active", v === "compact");
+    if (btnComfy) btnComfy.classList.toggle("active", v === "comfy");
+    if (btnList) btnList.classList.toggle("active", v === "list");
+    try { localStorage.setItem("yata_library_view", v); } catch (e) {}
   }
 
-  if (btnGrid) btnGrid.addEventListener("click", () => setView("grid"));
-  if (btnList) btnList.addEventListener("click", () => setView("list"));
-  try {
-    if (localStorage.getItem("yata_library_view") === "list") setView("list");
-  } catch (e) {}
-
-  if (filter) {
-    filter.addEventListener("input", () => {
-      const q = filter.value.trim().toLowerCase();
-      let shown = 0;
-      cards.forEach(el => {
-        const hay = ((el.dataset.title || "") + " " + (el.dataset.cats || "")).toLowerCase();
-        const match = !q || hay.includes(q);
-        el.classList.toggle("hidden", !match);
-        if (match) shown++;
-      });
-      rows.forEach(el => {
-        const hay = ((el.dataset.title || "") + " " + (el.dataset.cats || "")).toLowerCase();
-        el.classList.toggle("hidden", !(!q || hay.includes(q)));
-      });
-      if (countEl) countEl.textContent = String(shown);
+  function applyFilters() {
+    const q = filter ? filter.value.trim().toLowerCase() : "";
+    let shown = 0;
+    const matches = (el) => {
+      const hay = ((el.dataset.title || "") + " " + (el.dataset.cats || "")).toLowerCase();
+      if (q && !hay.includes(q)) return false;
+      if (onlyUnread && !(Number(el.dataset.unread || 0) > 0)) return false;
+      if (onlyDl && !(Number(el.dataset.dl || 0) > 0)) return false;
+      return true;
+    };
+    cards.forEach(el => {
+      const ok = matches(el);
+      el.classList.toggle("hidden", !ok);
+      if (ok) shown++;
     });
+    rows.forEach(el => el.classList.toggle("hidden", !matches(el)));
+    if (countEl) countEl.textContent = String(shown);
   }
+
+  if (btnCompact) btnCompact.addEventListener("click", () => setView("compact"));
+  if (btnComfy) btnComfy.addEventListener("click", () => setView("comfy"));
+  if (btnList) btnList.addEventListener("click", () => setView("list"));
+  if (btnUnread) btnUnread.addEventListener("click", () => { onlyUnread = !onlyUnread; btnUnread.classList.toggle("active", onlyUnread); applyFilters(); });
+  if (btnDownloaded) btnDownloaded.addEventListener("click", () => { onlyDl = !onlyDl; btnDownloaded.classList.toggle("active", onlyDl); applyFilters(); });
+  if (filter) filter.addEventListener("input", applyFilters);
+
+  try {
+    const saved = localStorage.getItem("yata_library_view");
+    if (saved === "comfy" || saved === "list") setView(saved);
+  } catch (e) {}
 })();
 </script>
 `))

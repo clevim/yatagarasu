@@ -1595,3 +1595,76 @@ func (c *suwayomiClient) listRecentUpdates(ctx context.Context, limit int) ([]Su
 	}
 	return out, nil
 }
+
+// pushRemovals unfavorites manga deleted in Karasu from Suwayomi's library.
+func (c *suwayomiClient) pushRemovals(ctx context.Context, keys []SyncMangaKey) {
+	q := `query FindForRemoval($sourceId: LongString!, $url: String!) {
+		mangas(condition: { sourceId: $sourceId, url: $url, inLibrary: true }) {
+			nodes { id }
+		}
+	}`
+	for _, k := range keys {
+		var data struct {
+			Mangas struct {
+				Nodes []struct {
+					ID int64 `json:"id"`
+				} `json:"nodes"`
+			} `json:"mangas"`
+		}
+		if err := c.graphql(ctx, q, map[string]any{
+			"sourceId": strconv.FormatInt(k.SourceID, 10),
+			"url":      k.URL,
+		}, &data); err != nil {
+			continue
+		}
+		for _, m := range data.Mangas.Nodes {
+			_ = c.toggleLibrary(ctx, m.ID, false)
+		}
+	}
+}
+
+// pushCategoriesAndRepos creates missing categories and merges extension repos
+// into Suwayomi so changes made in Karasu appear immediately on the server.
+func (c *suwayomiClient) pushCategoriesAndRepos(ctx context.Context, cats []SyncCategory, repos []string) {
+	if len(cats) > 0 {
+		if existing, err := c.listCategories(ctx); err == nil {
+			have := make(map[string]bool, len(existing))
+			for _, ec := range existing {
+				have[strings.ToLower(strings.TrimSpace(ec.Name))] = true
+			}
+			for _, cat := range cats {
+				name := strings.TrimSpace(cat.Name)
+				if name == "" || strings.EqualFold(name, "Default") || have[strings.ToLower(name)] {
+					continue
+				}
+				_, _ = c.createCategory(ctx, name)
+				have[strings.ToLower(name)] = true
+			}
+		}
+	}
+	if len(repos) > 0 {
+		if existing, err := c.getExtensionRepos(ctx); err == nil {
+			have := make(map[string]bool, len(existing))
+			merged := make([]string, 0, len(existing)+len(repos))
+			for _, r := range existing {
+				norm := strings.TrimRight(strings.TrimSpace(r), "/")
+				if norm != "" && !have[norm] {
+					have[norm] = true
+					merged = append(merged, r)
+				}
+			}
+			changed := false
+			for _, r := range repos {
+				norm := strings.TrimRight(strings.TrimSpace(r), "/")
+				if norm != "" && !have[norm] {
+					have[norm] = true
+					merged = append(merged, r)
+					changed = true
+				}
+			}
+			if changed {
+				_, _ = c.setExtensionRepos(ctx, merged)
+			}
+		}
+	}
+}

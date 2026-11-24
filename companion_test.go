@@ -1129,8 +1129,8 @@ func TestExtensionRepoManagementAndGlobalSearchAndLibraryGrid(t *testing.T) {
 	libResp.Body.Close()
 	for _, want := range []string{
 		"Vagabond", "/manga/55", "/api/suwayomi/image?path=",
-		"12 unread", "5 downloaded", "Seinen", "Filter library...",
-		"Update Library", "Manage Categories", `id="btnGrid"`, `id="btnList"`,
+		"12 unread", "5 downloaded", "Seinen", "Search library...",
+		"Update", "/categories", `id="btnCompact"`, `id="btnComfy"`, `id="btnList"`,
 	} {
 		if !strings.Contains(string(libBody), want) {
 			t.Errorf("/library missing %q", want)

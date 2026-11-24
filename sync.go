@@ -284,8 +284,22 @@ func (s shelf) handleSyncReconcile(w http.ResponseWriter, r *http.Request) {
 
 	st := s.loadSyncState()
 
-	// If Suwayomi is configured, pull its current library state first so changes
-	// made in Suwayomi WebUI merge cleanly with Karasu's payload.
+	// Apply explicit client deletions first so a manga deleted in Karasu is
+	// tombstoned before pulling Suwayomi's pre-push state.
+	for _, del := range req.DeletedMangaKeys {
+		key := del.str()
+		if existing, ok := st.Mangas[key]; ok {
+			if existing.UpdatedAt <= req.LastSyncAt || req.LastSyncAt == 0 {
+				delete(st.Mangas, key)
+				st.DeletedAt[key] = serverNowMs
+			}
+		} else {
+			st.DeletedAt[key] = serverNowMs
+		}
+	}
+
+	// If Suwayomi is configured, pull its current library state so changes made
+	// in Yatagarasu/Suwayomi merge cleanly with Karasu's payload.
 	suw := s.suwayomi()
 	if suw != nil {
 		if remote, err := suw.pullLibrary(r.Context()); err == nil && remote != nil {
@@ -342,9 +356,16 @@ func (s shelf) handleSyncReconcile(w http.ResponseWriter, r *http.Request) {
 		return resp.MissingExtensions[i].PkgName < resp.MissingExtensions[j].PkgName
 	})
 
-	// Best-effort push of merged chapter read states back to Suwayomi.
-	if suw != nil && len(resp.Mangas) > 0 {
-		suw.pushChapterReadStates(r.Context(), resp.Mangas)
+	// Best-effort bidirectional push back to Suwayomi: deletions, categories,
+	// extension repos, and merged chapter read states.
+	if suw != nil {
+		if len(req.DeletedMangaKeys) > 0 {
+			suw.pushRemovals(r.Context(), req.DeletedMangaKeys)
+		}
+		suw.pushCategoriesAndRepos(r.Context(), resp.Categories, resp.ExtensionRepos)
+		if len(resp.Mangas) > 0 {
+			suw.pushChapterReadStates(r.Context(), resp.Mangas)
+		}
 	}
 
 	writeJSON(w, resp)
