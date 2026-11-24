@@ -331,13 +331,49 @@ for (const f of document.querySelectorAll("form[data-confirm]"))
 
 var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Yatagarasu — library sync</title>` + baseHead + `
+<title>Yatagarasu — library</title>` + baseHead + `
 <style>
- .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.25rem}
- .filters a{padding:.3rem .65rem;border-radius:999px;border:1px solid var(--line);
+ .lib-head{display:flex;flex-wrap:wrap;gap:.65rem;align-items:center;justify-content:space-between;margin-bottom:1rem}
+ .lib-controls{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;flex:1;justify-content:flex-end}
+ .lib-search{padding:.4rem .7rem;font:inherit;font-size:.85rem;color:var(--ink);background:var(--surface);
+             border:1px solid var(--line);border-radius:var(--radius);min-width:12rem;max-width:18rem;flex:1}
+ .lib-search:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+ .view-seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
+ .view-seg button{padding:.36rem .65rem;font:inherit;font-size:.8125rem;font-weight:540;border:0;border-right:1px solid var(--line);
+                  background:transparent;color:var(--muted);cursor:pointer}
+ .view-seg button:last-child{border-right:0}
+ .view-seg button:hover{color:var(--ink);background:var(--raise)}
+ .view-seg button.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+ .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.15rem}
+ .filters a{padding:.3rem .68rem;border-radius:999px;border:1px solid var(--line);
             background:var(--surface);color:var(--muted);font-size:.8125rem;text-decoration:none}
  .filters a:hover{border-color:var(--muted);color:var(--ink)}
  .filters a.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+ .lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.4rem,1fr));gap:1.05rem .9rem;margin-bottom:1.35rem}
+ .lib-card{display:flex;flex-direction:column;text-decoration:none;color:var(--ink)}
+ .lib-card.hidden,.lib-row.hidden{display:none}
+ .lib-cover{position:relative;aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;
+            background:var(--raise);border:1px solid var(--line);margin-bottom:.42rem;
+            transition:transform 150ms var(--ease),border-color 150ms var(--ease)}
+ a.lib-card:hover .lib-cover{transform:translateY(-2px);border-color:var(--accent)}
+ .lib-cover img{width:100%;height:100%;object-fit:cover;display:block}
+ .lib-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+                  font-size:2.2rem;font-weight:650;color:var(--muted);background:var(--raise)}
+ .lib-badges{position:absolute;top:.4rem;left:.4rem;display:flex;gap:.25rem;flex-wrap:wrap}
+ .badge{padding:.1rem .44rem;border-radius:.32rem;font-size:.7rem;font-weight:650;font-variant-numeric:tabular-nums;
+        line-height:1.35;box-shadow:0 1px 4px oklch(0 0 0 / .32)}
+ .badge.unread{background:var(--accent-solid);color:var(--on-accent)}
+ .badge.dl{background:var(--ok);color:oklch(0.16 0.02 155)}
+ .lib-title{font-size:.84rem;font-weight:560;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;
+            -webkit-box-orient:vertical;overflow:hidden}
+ .lib-sub{font-size:.72rem;color:var(--muted);margin-top:.12rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .lib-link{color:var(--ink);text-decoration:none;font-weight:560}
+ .lib-link:hover{color:var(--accent)}
+ .lib-mini{width:28px;height:40px;border-radius:.25rem;object-fit:cover;vertical-align:middle;margin-right:.55rem;background:var(--raise)}
+ .lib-title-cell{display:inline-flex;align-items:center}
+ .lib-view-list{display:none}
+ .lib-wrap.list-mode .lib-grid{display:none}
+ .lib-wrap.list-mode .lib-view-list{display:block}
  .prog{display:flex;align-items:center;gap:.55rem;min-width:8.5rem}
  .bar-bg{flex:1;height:5px;background:var(--line);border-radius:999px;overflow:hidden}
  .bar-fg{height:100%;background:var(--accent-solid);border-radius:999px}
@@ -351,12 +387,35 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 <body><div class="wrap">
 ` + navHeader + `
 
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
 <div class="stats">
-  <div class="stat"><b>{{.TotalMangas}}</b><span>synced manga</span></div>
+  <div class="stat"><b>{{.TotalMangas}}</b><span>library manga</span></div>
   <div class="stat"><b>{{len .Categories}}</b><span>categories</span></div>
   <div class="stat"><b>{{.ReadChapters}} / {{.TotalChapters}}</b><span>chapters read</span></div>
   <div class="stat"><b>{{.MergedTotal}}</b><span>merged sources</span></div>
   <div class="stat"><b>{{.LastSync}}</b><span>last reconcile</span></div>
+</div>
+
+<div class="lib-head">
+  <div>
+    <h2>Library{{if .SelectedCat}} · {{.SelectedCat}}{{end}} <span class="pill" id="libCount">{{len .Mangas}}</span></h2>
+  </div>
+  <div class="lib-controls">
+    <input class="lib-search" id="libFilter" type="search" placeholder="Filter library..." aria-label="Filter library">
+    <div class="view-seg" role="group" aria-label="View mode">
+      <button type="button" id="btnGrid" class="active">Grid</button>
+      <button type="button" id="btnList">List</button>
+    </div>
+    {{if .SuwayomiConnected}}
+    <form method="post" action="/downloads/control" style="margin:0">
+      <input type="hidden" name="action" value="update-library">
+      <input type="hidden" name="redirect" value="/library">
+      <button class="btn sm primary" type="submit">Update Library</button>
+    </form>
+    {{end}}
+  </div>
 </div>
 
 {{if .Categories}}
@@ -369,35 +428,68 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 {{end}}
 
 {{if .Mangas}}
-<section class="card-table">
-  <header>
-    <h2>Synced library{{if .SelectedCat}} · {{.SelectedCat}}{{end}}</h2>
-    <p>{{len .Mangas}} {{if eq (len .Mangas) 1}}title{{else}}titles{{end}}</p>
-  </header>
-  <table>
-    <thead><tr><th>Title</th><th>Categories</th><th>Progress</th><th class="size">Merged</th><th>Updated</th></tr></thead>
-    <tbody>
-      {{range .Mangas}}
-      <tr>
-        <td><strong>{{.Title}}</strong></td>
-        <td>{{range .Categories}}<span class="tag muted">{{.}}</span> {{end}}</td>
-        <td>
-          <div class="prog">
-            <div class="bar-bg"><div class="bar-fg" style="width:{{.ProgressPct}}%"></div></div>
-            <span>{{.ReadCount}}/{{.TotalCount}}</span>
-          </div>
-        </td>
-        <td class="size">{{if .MergedCount}}<span class="tag accent">+{{.MergedCount}}</span>{{else}}—{{end}}</td>
-        <td class="when">{{.Updated}}</td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-</section>
+<div class="lib-wrap" id="libWrap">
+  <div class="lib-grid" id="libGrid">
+    {{range .Mangas}}
+    {{if gt .SuwayomiID 0}}
+    <a class="lib-card" href="/manga/{{.SuwayomiID}}" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}">
+    {{else}}
+    <div class="lib-card" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}">
+    {{end}}
+      <div class="lib-cover">
+        {{if .ThumbnailURL}}<img src="{{.ThumbnailURL}}" alt="{{.Title}}" loading="lazy">{{else}}<div class="lib-placeholder">{{.Initial}}</div>{{end}}
+        {{if or (gt .UnreadCount 0) (gt .DownloadCount 0)}}
+        <div class="lib-badges">
+          {{if gt .UnreadCount 0}}<span class="badge unread" title="{{.UnreadCount}} unread">{{.UnreadCount}}</span>{{end}}
+          {{if gt .DownloadCount 0}}<span class="badge dl" title="{{.DownloadCount}} downloaded">{{.DownloadCount}}</span>{{end}}
+        </div>
+        {{end}}
+      </div>
+      <span class="lib-title">{{.Title}}</span>
+      {{if .Categories}}<span class="lib-sub">{{range $i, $c := .Categories}}{{if $i}} · {{end}}{{$c}}{{end}}</span>{{end}}
+    {{if gt .SuwayomiID 0}}</a>{{else}}</div>{{end}}
+    {{end}}
+  </div>
+
+  <section class="card-table lib-view-list">
+    <header>
+      <h2>Library{{if .SelectedCat}} · {{.SelectedCat}}{{end}}</h2>
+      <p>{{len .Mangas}} {{if eq (len .Mangas) 1}}title{{else}}titles{{end}}</p>
+    </header>
+    <table>
+      <thead><tr><th>Title</th><th>Categories</th><th>Progress</th><th class="size">Unread / DL</th><th>Updated</th></tr></thead>
+      <tbody>
+        {{range .Mangas}}
+        <tr class="lib-row" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}">
+          <td>
+            <span class="lib-title-cell">
+              {{if .ThumbnailURL}}<img class="lib-mini" src="{{.ThumbnailURL}}" alt="" loading="lazy">{{end}}
+              {{if gt .SuwayomiID 0}}<a class="lib-link" href="/manga/{{.SuwayomiID}}">{{.Title}}</a>{{else}}<strong>{{.Title}}</strong>{{end}}
+            </span>
+          </td>
+          <td>{{range .Categories}}<span class="tag muted">{{.}}</span> {{end}}</td>
+          <td>
+            <div class="prog">
+              <div class="bar-bg"><div class="bar-fg" style="width:{{.ProgressPct}}%"></div></div>
+              <span>{{.ReadCount}}/{{.TotalCount}}</span>
+            </div>
+          </td>
+          <td class="size">
+            {{if gt .UnreadCount 0}}<span class="tag accent">{{.UnreadCount}} unread</span> {{end}}
+            {{if gt .DownloadCount 0}}<span class="tag">{{.DownloadCount}} dl</span>{{end}}
+            {{if and (eq .UnreadCount 0) (eq .DownloadCount 0)}}—{{end}}
+          </td>
+          <td class="when">{{.Updated}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+</div>
 {{else}}
 <section class="empty">
-  <h2>No synced library data yet</h2>
-  <p>Enable <strong>Sync library, progress &amp; extensions</strong> under <em>Settings → Yatagarasu</em> in Karasu and run a sync. Categories, read progress, merged sources and extension repos will appear here.</p>
+  <h2>No library titles yet</h2>
+  <p>{{if .SuwayomiConnected}}Add manga from <a href="/browse">Browse</a> or sync from Karasu under <em>Settings → Yatagarasu</em>.{{else}}Connect Suwayomi in <a href="/settings#suwayomi">Settings</a> or enable <strong>Sync library, progress &amp; extensions</strong> in Karasu.{{end}}</p>
 </section>
 {{end}}
 
@@ -420,6 +512,50 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 </div>
 
 </div>
+<script nonce="{{.Nonce}}">
+(function(){
+  const wrap = document.getElementById("libWrap");
+  const filter = document.getElementById("libFilter");
+  const btnGrid = document.getElementById("btnGrid");
+  const btnList = document.getElementById("btnList");
+  const countEl = document.getElementById("libCount");
+  const cards = Array.from(document.querySelectorAll(".lib-card"));
+  const rows = Array.from(document.querySelectorAll(".lib-row"));
+
+  function setView(v) {
+    if (!wrap) return;
+    const isList = v === "list";
+    wrap.classList.toggle("list-mode", isList);
+    if (btnGrid) btnGrid.classList.toggle("active", !isList);
+    if (btnList) btnList.classList.toggle("active", isList);
+    try { localStorage.setItem("yata_library_view", isList ? "list" : "grid"); } catch (e) {}
+  }
+
+  if (btnGrid) btnGrid.addEventListener("click", () => setView("grid"));
+  if (btnList) btnList.addEventListener("click", () => setView("list"));
+  try {
+    if (localStorage.getItem("yata_library_view") === "list") setView("list");
+  } catch (e) {}
+
+  if (filter) {
+    filter.addEventListener("input", () => {
+      const q = filter.value.trim().toLowerCase();
+      let shown = 0;
+      cards.forEach(el => {
+        const hay = ((el.dataset.title || "") + " " + (el.dataset.cats || "")).toLowerCase();
+        const match = !q || hay.includes(q);
+        el.classList.toggle("hidden", !match);
+        if (match) shown++;
+      });
+      rows.forEach(el => {
+        const hay = ((el.dataset.title || "") + " " + (el.dataset.cats || "")).toLowerCase();
+        el.classList.toggle("hidden", !(!q || hay.includes(q)));
+      });
+      if (countEl) countEl.textContent = String(shown);
+    });
+  }
+})();
+</script>
 `))
 
 var translateTmpl = template.Must(template.New("translate").Parse(`<!doctype html>
@@ -807,13 +943,13 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
  .seg a:last-child{border-right:0}
  .seg a:hover{color:var(--ink);background:var(--raise)}
  .seg a.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
- .search-bar{display:flex;gap:.4rem;align-items:center;flex:1;min-width:13rem;max-width:24rem}
- .search-bar input,.source-select{padding:.4rem .65rem;font:inherit;font-size:.85rem;color:var(--ink);
+ .search-bar{display:flex;gap:.4rem;align-items:center;flex:1;min-width:13rem;max-width:26rem}
+ .search-bar input,.source-select,.lang-select,.repo-input{padding:.4rem .65rem;font:inherit;font-size:.85rem;color:var(--ink);
    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
- .search-bar input{flex:1;min-width:0}
+ .search-bar input,.repo-input{flex:1;min-width:0}
  .source-select{max-width:16rem}
  .manga-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.25rem,1fr));gap:1rem .85rem;margin-bottom:1.25rem}
- .manga-card{display:flex;flex-direction:column;text-decoration:none;color:var(--ink);group:card}
+ .manga-card{display:flex;flex-direction:column;text-decoration:none;color:var(--ink)}
  .cover-wrap{position:relative;aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;
              background:var(--raise);border:1px solid var(--line);margin-bottom:.42rem;
              transition:transform 150ms var(--ease),border-color 150ms var(--ease)}
@@ -824,9 +960,20 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
               box-shadow:0 1px 4px oklch(0 0 0 / .28)}
  .manga-title{font-size:.84rem;font-weight:550;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;
               -webkit-box-orient:vertical;overflow:hidden}
+ .global-group{margin-bottom:1.65rem}
+ .global-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:.75rem;
+              padding-bottom:.45rem;border-bottom:1px solid var(--line)}
+ .global-head h2{display:flex;align-items:center;gap:.45rem;font-size:.98rem}
  .pager{display:flex;justify-content:space-between;align-items:center;padding-top:.75rem;border-top:1px solid var(--line)}
  .ext-icon{width:24px;height:24px;border-radius:.3rem;object-fit:cover;vertical-align:middle;margin-right:.45rem;background:var(--raise)}
  .ext-name{display:inline-flex;align-items:center;font-weight:550}
+ .ext-row.hidden{display:none}
+ .repo-list{list-style:none;margin:0 0 .85rem;padding:0}
+ .repo-list li{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem .75rem;
+               padding:.48rem 0;border-bottom:1px solid var(--line)}
+ .repo-list li:last-child{border-bottom:0}
+ .repo-list code{word-break:break-all;font-size:.8rem}
+ .repo-form{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}
 </style>
 <body><div class="wrap">
 ` + navHeader + `
@@ -852,7 +999,9 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
       <form method="get" action="/browse" class="inline" style="margin:0;display:inline-flex;gap:.4rem;align-items:center">
         <input type="hidden" name="tab" value="sources">
         <input type="hidden" name="type" value="{{.BrowseType}}">
+        {{if .Query}}<input type="hidden" name="q" value="{{.Query}}">{{end}}
         <select name="source" class="source-select" aria-label="Source">
+          <option value="all"{{if .GlobalMode}} selected{{end}}>All sources (Global Search)</option>
           {{range .Sources}}
           <option value="{{.ID}}"{{if eq .ID $.SourceID}} selected{{end}}>{{.Name}} ({{.Lang}})</option>
           {{end}}
@@ -860,22 +1009,57 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
         <button class="btn sm" type="submit">Go</button>
       </form>
       <div class="seg">
+        {{if not .GlobalMode}}
         <a href="/browse?tab=sources&source={{.SourceID}}&type=POPULAR"{{if eq .BrowseType "POPULAR"}} class="active"{{end}}>Popular</a>
         {{if and .SelectedSource .SelectedSource.SupportsLatest}}
         <a href="/browse?tab=sources&source={{.SourceID}}&type=LATEST"{{if eq .BrowseType "LATEST"}} class="active"{{end}}>Latest</a>
         {{end}}
+        {{end}}
+        <a href="/browse?tab=sources&source=all&type=SEARCH{{if .Query}}&q={{.Query}}{{end}}"{{if .GlobalMode}} class="active"{{end}}>Global Search</a>
       </div>
     </div>
     <form method="get" action="/browse" class="search-bar">
       <input type="hidden" name="tab" value="sources">
       <input type="hidden" name="source" value="{{.SourceID}}">
       <input type="hidden" name="type" value="SEARCH">
-      <input name="q" value="{{.Query}}" placeholder="Search {{if .SelectedSource}}{{.SelectedSource.Name}}{{else}}source{{end}}..." aria-label="Search manga">
+      <input name="q" value="{{.Query}}" placeholder="{{if .GlobalMode}}Search all installed sources...{{else if .SelectedSource}}Search {{.SelectedSource.Name}}...{{else}}Search source...{{end}}" aria-label="Search manga">
       <button class="btn sm primary" type="submit">Search</button>
     </form>
   </div>
 
-  {{if and .BrowseResult .BrowseResult.Mangas}}
+  {{if .GlobalMode}}
+    {{if eq .Query ""}}
+    <section class="empty">
+      <h2>Global Search</h2>
+      <p>Enter a title in the search box above to search across all {{len .Sources}} installed sources at once.</p>
+    </section>
+    {{else if .GlobalResults}}
+      {{range .GlobalResults}}
+      <section class="global-group">
+        <div class="global-head">
+          <h2>{{.Source.Name}} <span class="tag muted">{{.Source.Lang}}</span></h2>
+          <a class="btn ghost" href="/browse?tab=sources&source={{.Source.ID}}&type=SEARCH&q={{$.Query}}">Open in {{.Source.Name}} →</a>
+        </div>
+        <div class="manga-grid">
+          {{range .Mangas}}
+          <a class="manga-card" href="/manga/{{.ID}}">
+            <div class="cover-wrap">
+              {{if .ThumbnailURL}}<img src="{{.ThumbnailURL}}" alt="{{.Title}}" loading="lazy">{{end}}
+              {{if .InLibrary}}<span class="cover-badge">In Library</span>{{end}}
+            </div>
+            <span class="manga-title">{{.Title}}</span>
+          </a>
+          {{end}}
+        </div>
+      </section>
+      {{end}}
+    {{else}}
+    <section class="empty">
+      <h2>No global results for “{{.Query}}”</h2>
+      <p>None of the installed sources returned matches. Try a shorter query or install more extensions.</p>
+    </section>
+    {{end}}
+  {{else if and .BrowseResult .BrowseResult.Mangas}}
   <div class="manga-grid">
     {{range .BrowseResult.Mangas}}
     <a class="manga-card" href="/manga/{{.ID}}">
@@ -909,29 +1093,61 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
   </section>
   {{end}}
 {{else}}
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Extension Repositories <span class="pill">{{len .ExtRepos}}</span></h2>
+      <form method="post" action="/browse/extensions" style="margin:0">
+        <input type="hidden" name="action" value="refresh">
+        <button class="btn sm" type="submit">Refresh extensions</button>
+      </form>
+    </div>
+    {{if .ExtRepos}}
+    <ul class="repo-list">
+      {{range .ExtRepos}}
+      <li>
+        <code>{{.}}</code>
+        <form class="inline" method="post" action="/browse/extensions" data-confirm="Remove extension repository {{.}}?">
+          <input type="hidden" name="action" value="remove-repo">
+          <input type="hidden" name="repoUrl" value="{{.}}">
+          <button class="btn ghost" type="submit">Remove</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="hint" style="margin-bottom:.75rem">No Mihon / Keiyoushi extension repositories configured in Suwayomi yet. Add an <code>index.min.json</code> URL below.</p>
+    {{end}}
+    <form class="repo-form" method="post" action="/browse/extensions">
+      <input type="hidden" name="action" value="add-repo">
+      <input class="repo-input" name="repoUrl" type="url" required placeholder="https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json" aria-label="Extension repository URL">
+      <button class="btn sm primary" type="submit">Add repo</button>
+    </form>
+  </section>
+
   <div class="toolbar">
-    <form method="get" action="/browse" class="search-bar">
-      <input type="hidden" name="tab" value="extensions">
-      <input name="eq" value="{{.ExtQuery}}" placeholder="Filter extensions by name or language..." aria-label="Filter extensions">
-      <button class="btn sm" type="submit">Filter</button>
-    </form>
-    <form method="post" action="/browse/extensions">
-      <input type="hidden" name="action" value="refresh">
-      <button class="btn sm" type="submit">Refresh extension repos</button>
-    </form>
+    <div class="search-bar">
+      <input id="extFilter" type="search" value="{{.ExtQuery}}" placeholder="Filter extensions by name or package..." aria-label="Filter extensions">
+      <select id="extLangFilter" class="lang-select" aria-label="Filter by language">
+        <option value="">All languages</option>
+        {{range .ExtLangs}}
+        <option value="{{.}}"{{if eq . $.ExtLang}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </div>
+    <span class="hint">Instant filter across installed &amp; available extensions</span>
   </div>
 
   <section class="card-table">
     <header>
       <h2>Installed extensions</h2>
-      <p>{{len .InstalledExts}} installed</p>
+      <p><span id="instCount">{{len .InstalledExts}}</span> installed</p>
     </header>
     {{if .InstalledExts}}
     <table>
       <thead><tr><th>Extension</th><th>Lang</th><th class="size">Version</th><th></th></tr></thead>
       <tbody>
         {{range .InstalledExts}}
-        <tr>
+        <tr class="ext-row" data-group="inst" data-name="{{.Name}}" data-lang="{{.Lang}}" data-pkg="{{.PkgName}}">
           <td>
             <span class="ext-name">
               {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{end}}
@@ -968,14 +1184,14 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
   <section class="card-table">
     <header>
       <h2>Available extensions</h2>
-      <p>{{len .AvailableExts}} available</p>
+      <p><span id="availCount">{{len .AvailableExts}}</span> available</p>
     </header>
     {{if .AvailableExts}}
     <table>
       <thead><tr><th>Extension</th><th>Lang</th><th class="size">Version</th><th></th></tr></thead>
       <tbody>
         {{range .AvailableExts}}
-        <tr>
+        <tr class="ext-row" data-group="avail" data-name="{{.Name}}" data-lang="{{.Lang}}" data-pkg="{{.PkgName}}">
           <td>
             <span class="ext-name">
               {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{end}}
@@ -997,7 +1213,7 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
       </tbody>
     </table>
     {{else}}
-    <p class="hint" style="padding:1rem 1.25rem">No available extensions found. Add extension repos in Suwayomi and click Refresh.</p>
+    <p class="hint" style="padding:1rem 1.25rem">No available extensions found. Add an extension repo above and click Refresh extensions.</p>
     {{end}}
   </section>
 {{end}}
@@ -1007,6 +1223,34 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
 <script nonce="{{.Nonce}}">
 for (const f of document.querySelectorAll("form[data-confirm]"))
   f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+
+(function(){
+  const qEl = document.getElementById("extFilter");
+  const lEl = document.getElementById("extLangFilter");
+  if (!qEl && !lEl) return;
+  const rows = Array.from(document.querySelectorAll(".ext-row"));
+  const instCount = document.getElementById("instCount");
+  const availCount = document.getElementById("availCount");
+  function applyFilter() {
+    const q = qEl ? qEl.value.trim().toLowerCase() : "";
+    const lang = lEl ? lEl.value.trim().toLowerCase() : "";
+    let instN = 0, availN = 0;
+    rows.forEach(r => {
+      const rl = (r.dataset.lang || "").toLowerCase();
+      const hay = ((r.dataset.name || "") + " " + rl + " " + (r.dataset.pkg || "")).toLowerCase();
+      const ok = (!q || hay.includes(q)) && (!lang || rl === lang);
+      r.classList.toggle("hidden", !ok);
+      if (ok) {
+        if (r.dataset.group === "inst") instN++;
+        else availN++;
+      }
+    });
+    if (instCount) instCount.textContent = String(instN);
+    if (availCount) availCount.textContent = String(availN);
+  }
+  if (qEl) qEl.addEventListener("input", applyFilter);
+  if (lEl) lEl.addEventListener("change", applyFilter);
+})();
 </script>
 `))
 
@@ -1243,48 +1487,137 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
 <title>{{.ChapterTitle}} · {{.MangaTitle}} — Yatagarasu</title>` + favicon + `
 <style>
  :root{
-   --bg:oklch(0.115 0.008 50); --bar:oklch(0.165 0.012 50 / .94); --line:oklch(0.28 0.014 50);
-   --ink:oklch(0.93 0.008 60); --muted:oklch(0.68 0.012 60);
-   --accent:oklch(0.76 0.145 52); --accent-soft:oklch(0.28 0.055 48);
+   --bg:oklch(0.14 0.012 50); --bar:oklch(0.165 0.014 50 / .92); --drawer:oklch(0.185 0.014 50);
+   --surface:oklch(0.22 0.014 50); --line:oklch(0.30 0.014 50);
+   --ink:oklch(0.94 0.008 60); --muted:oklch(0.70 0.012 60);
+   --accent:oklch(0.76 0.145 52); --accent-solid:oklch(0.70 0.155 48); --accent-soft:oklch(0.28 0.055 48);
+   --on-accent:oklch(0.18 0.025 50);
    --ok:oklch(0.78 0.11 160); --ok-bg:oklch(0.26 0.05 160);
-   --radius:.45rem;
+   --radius:.48rem; --ease:cubic-bezier(.22,1,.36,1);
+ }
+ body.bg-black{--bg:#0a0a0a}
+ body.bg-ink{--bg:oklch(0.14 0.012 50)}
+ body.bg-paper{
+   --bg:oklch(0.955 0.012 65); --bar:oklch(0.985 0.006 60 / .94); --drawer:oklch(0.99 0.004 60);
+   --surface:oklch(0.95 0.008 60); --line:oklch(0.86 0.012 58);
+   --ink:oklch(0.22 0.020 48); --muted:oklch(0.47 0.018 50);
+   --accent:oklch(0.52 0.170 40); --accent-solid:oklch(0.50 0.170 38); --accent-soft:oklch(0.93 0.038 45);
+   --on-accent:oklch(0.99 0.01 55);
+   --ok:oklch(0.42 0.105 155); --ok-bg:oklch(0.92 0.04 155);
  }
  *{box-sizing:border-box}
  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
    font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh}
- .rbar{
-   position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:.5rem .75rem;
-   align-items:center;justify-content:space-between;padding:.55rem 1rem;
-   background:var(--bar);border-bottom:1px solid var(--line);backdrop-filter:blur(8px);
-   transition:transform 160ms ease,opacity 160ms ease;
+
+ /* Floating auto-hiding Top & Bottom HUD */
+ .rbar-top,.rbar-bot{
+   position:fixed;left:0;right:0;z-index:30;display:flex;align-items:center;justify-content:space-between;
+   gap:.55rem;padding:.55rem .95rem;background:var(--bar);backdrop-filter:blur(10px);
+   transition:transform 180ms var(--ease),opacity 180ms var(--ease);
  }
- body.zen .rbar{transform:translateY(-100%);opacity:0;pointer-events:none}
- .rbar-left,.rbar-mid,.rbar-right{display:flex;align-items:center;gap:.45rem;min-width:0}
- .rtitle{min-width:0;max-width:22rem}
+ .rbar-top{top:0;border-bottom:1px solid var(--line)}
+ .rbar-bot{bottom:0;border-top:1px solid var(--line)}
+ body.hud-hidden .rbar-top{transform:translateY(-100%);opacity:0;pointer-events:none}
+ body.hud-hidden .rbar-bot{transform:translateY(100%);opacity:0;pointer-events:none}
+
+ .rbar-left,.rbar-right{display:flex;align-items:center;gap:.45rem;min-width:0}
+ .rtitle{min-width:0;max-width:24rem}
  .rtitle strong{display:block;font-size:.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
- .rtitle span{display:block;font-size:.75rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .rtitle span{display:block;font-size:.74rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
  .rbtn{
-   display:inline-flex;align-items:center;gap:.3rem;padding:.32rem .6rem;border-radius:var(--radius);
+   display:inline-flex;align-items:center;gap:.35rem;padding:.34rem .62rem;border-radius:var(--radius);
    border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;font-size:.8rem;
-   font-weight:530;text-decoration:none;cursor:pointer;white-space:nowrap;
+   font-weight:540;text-decoration:none;cursor:pointer;white-space:nowrap;
+   transition:background 130ms var(--ease),border-color 130ms var(--ease);
  }
- .rbtn:hover{border-color:var(--muted);background:oklch(0.22 0.012 50)}
- .rbtn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+ .rbtn:hover{border-color:var(--muted);background:var(--surface)}
+ .rbtn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
  .rbtn.done{background:var(--ok-bg);border-color:transparent;color:var(--ok)}
- .rbtn.disabled{opacity:.38;pointer-events:none}
- .rcounter{font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--muted);padding:0 .35rem;white-space:nowrap}
- .stage{width:100%;min-height:calc(100vh - 3.2rem);display:flex;flex-direction:column;align-items:center;padding-bottom:3rem}
- .stage.webtoon img{display:block;width:100%;max-width:56rem;height:auto;margin:0 auto;user-select:none}
- .stage.single{justify-content:center;padding:.5rem 0 2rem;position:relative}
- .stage.single img{display:none;max-width:100vw;max-height:calc(100vh - 4rem);width:auto;height:auto;object-fit:contain;margin:0 auto;user-select:none;cursor:pointer}
- .stage.single img.current{display:block}
- .rfoot{display:flex;gap:.75rem;justify-content:center;align-items:center;padding:2rem 1rem 3rem}
- .empty-reader{padding:4rem 1.5rem;text-align:center;color:var(--muted)}
- .kbd-hint{font-size:.72rem;color:var(--muted);display:none}
- @media (min-width:54rem){.kbd-hint{display:inline}}
+ .rbtn.disabled{opacity:.36;pointer-events:none}
+
+ /* Bottom Scrubber */
+ .scrubber{display:flex;align-items:center;gap:.65rem;flex:1;max-width:44rem;margin:0 auto}
+ .scrubber input[type=range]{flex:1;min-width:6rem;accent-color:var(--accent-solid);cursor:pointer;height:5px}
+ .rcounter{font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap;min-width:5.8rem;text-align:center}
+
+ /* Stage & Reading Modes */
+ .stage{width:100%;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;user-select:none}
+ .stage img{display:none;margin:0;user-select:none;-webkit-user-drag:none}
+
+ /* Webtoon (Vertical) */
+ .stage.mode-webtoon{justify-content:flex-start;padding:0 0 4.5rem}
+ .stage.mode-webtoon img{display:block;cursor:pointer}
+ .stage.mode-webtoon.fit-width img{width:100%;max-width:56rem;height:auto}
+ .stage.mode-webtoon.fit-screen img{max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain}
+ .stage.mode-webtoon.fit-height img{height:100vh;width:auto;max-width:100vw;object-fit:contain}
+ .stage.mode-webtoon.fit-original img{width:auto;height:auto;max-width:none}
+
+ /* Single Page (RTL / LTR) */
+ .stage.mode-single{flex-direction:row;align-items:center;justify-content:center;padding:0;min-height:100vh}
+ .stage.mode-single img.current{display:block;cursor:pointer}
+ .stage.mode-single.fit-screen img.current{max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain}
+ .stage.mode-single.fit-width img.current{width:100vw;height:auto;max-height:none}
+ .stage.mode-single.fit-height img.current{height:100vh;width:auto;max-width:none}
+ .stage.mode-single.fit-original img.current{width:auto;height:auto;max-width:none}
+
+ /* Double Page (RTL / LTR) */
+ .stage.mode-double{flex-direction:row;align-items:center;justify-content:center;gap:0;padding:0;min-height:100vh}
+ .stage.mode-double.dir-rtl{flex-direction:row-reverse}
+ .stage.mode-double img.current{display:block;cursor:pointer}
+ .stage.mode-double.fit-screen img.current{max-width:50vw;max-height:100vh;width:auto;height:auto;object-fit:contain}
+ .stage.mode-double.fit-width img.current{width:50vw;height:auto;max-height:none}
+ .stage.mode-double.fit-height img.current{height:100vh;width:auto;max-width:50vw;object-fit:contain}
+ .stage.mode-double.fit-original img.current{width:auto;height:auto;max-width:none}
+
+ .rfoot{display:flex;gap:.75rem;justify-content:center;align-items:center;padding:2rem 1rem 5rem}
+ body:not(.is-webtoon) .rfoot{display:none}
+ .empty-reader{padding:6rem 1.5rem;text-align:center;color:var(--muted)}
+
+ /* Slide-out Reader Settings Drawer */
+ .rbackdrop{position:fixed;inset:0;z-index:40;background:oklch(0 0 0 / .48);opacity:0;pointer-events:none;transition:opacity 180ms var(--ease)}
+ .rdrawer{
+   position:fixed;top:0;right:0;bottom:0;z-index:45;width:min(21rem,90vw);background:var(--drawer);
+   border-left:1px solid var(--line);padding:1rem 1.15rem 2rem;overflow-y:auto;
+   transform:translateX(100%);transition:transform 200ms var(--ease);
+ }
+ body.drawer-open .rbackdrop{opacity:1;pointer-events:auto}
+ body.drawer-open .rdrawer{transform:translateX(0)}
+ .drawer-head{display:flex;align-items:center;justify-content:space-between;padding-bottom:.75rem;border-bottom:1px solid var(--line);margin-bottom:1rem}
+ .drawer-head h2{margin:0;font-size:1rem;font-weight:620}
+ .dgroup{margin-bottom:1.15rem}
+ .dgroup h3{margin:0 0 .5rem;font-size:.76rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+ .dopts{display:flex;flex-direction:column;gap:.35rem}
+ .dopts.row{flex-direction:row;flex-wrap:wrap}
+ .dopt{
+   display:flex;align-items:center;justify-content:space-between;padding:.48rem .7rem;border-radius:var(--radius);
+   border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;font-size:.835rem;
+   text-align:left;cursor:pointer;transition:background 130ms var(--ease),border-color 130ms var(--ease);
+ }
+ .dopts.row .dopt{flex:1;justify-content:center;min-width:5.4rem}
+ .dopt:hover{background:var(--surface);border-color:var(--muted)}
+ .dopt.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+ .kbd-list{list-style:none;margin:0;padding:0;font-size:.78rem;color:var(--muted)}
+ .kbd-list li{display:flex;justify-content:space-between;padding:.28rem 0;border-bottom:1px solid var(--line)}
+ .kbd-list li:last-child{border-bottom:0}
+ kbd{font:0.76rem/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:.06rem .35rem;
+     border:1px solid var(--line);border-radius:.28rem;background:var(--surface);color:var(--ink)}
+
+ /* Translation status toast */
+ .ttoast{
+   position:fixed;top:3.8rem;left:50%;transform:translateX(-50%);z-index:35;
+   display:none;align-items:center;gap:.5rem;padding:.45rem .85rem;border-radius:999px;
+   background:var(--bar);border:1px solid var(--accent);color:var(--ink);font-size:.8rem;
+   box-shadow:0 4px 18px oklch(0 0 0 / .35);backdrop-filter:blur(8px);
+ }
+ .ttoast.show{display:inline-flex}
+ .spinner{width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+ @keyframes spin{to{transform:rotate(360deg)}}
+ @media (max-width:40rem){.rtitle{max-width:10rem}.rbtn .lbl-sm{display:none}}
 </style>
-<body>
-<header class="rbar" id="rbar">
+<body class="bg-ink is-webtoon">
+
+<header class="rbar-top" id="rbarTop">
   <div class="rbar-left">
     <a class="rbtn" href="{{.BackURL}}">← {{.BackLabel}}</a>
     <div class="rtitle">
@@ -1292,24 +1625,24 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
       <span>{{.MangaTitle}}</span>
     </div>
   </div>
-  <div class="rbar-mid">
-    {{if .PrevURL}}<a class="rbtn" id="prevCh" href="{{.PrevURL}}">← Prev</a>{{else}}<span class="rbtn disabled">← Prev</span>{{end}}
-    <span class="rcounter" id="counter">1 / {{.PageCount}}</span>
-    {{if .NextURL}}<a class="rbtn" id="nextCh" href="{{.NextURL}}">Next →</a>{{else}}<span class="rbtn disabled">Next →</span>{{end}}
-  </div>
   <div class="rbar-right">
-    <button class="rbtn" type="button" data-mode="webtoon">Webtoon</button>
-    <button class="rbtn" type="button" data-mode="rtl">RTL</button>
-    <button class="rbtn" type="button" data-mode="ltr">LTR</button>
+    {{if .HasTranslator}}
+    <button class="rbtn" type="button" id="translateBtn" title="Toggle live page translation (T)" data-lang="{{.TranslatorLang}}">Translate</button>
+    {{end}}
     <button class="rbtn{{if .IsRead}} done{{end}}" type="button" id="markReadBtn">{{if .IsRead}}Read ✓{{else}}Mark Read{{end}}</button>
-    <span class="kbd-hint" title="Arrow keys / Space to navigate, F to toggle toolbar">F: bar</span>
+    <button class="rbtn" type="button" id="settingsBtn" title="Reader settings (S)" aria-label="Reader settings">⚙ <span class="lbl-sm">Settings</span></button>
   </div>
 </header>
 
+<div class="ttoast" id="ttoast" role="status" aria-live="polite">
+  <span class="spinner" id="tspinner"></span>
+  <span id="ttoastMsg">Translating page…</span>
+</div>
+
 {{if .Pages}}
-<main class="stage webtoon" id="stage" data-mark-url="{{.MarkReadURL}}" data-read="{{if .IsRead}}true{{else}}false{{end}}">
+<main class="stage mode-webtoon fit-screen" id="stage" data-mark-url="{{.MarkReadURL}}" data-read="{{if .IsRead}}true{{else}}false{{end}}">
   {{range $i, $src := .Pages}}
-  <img src="{{$src}}" alt="Page {{$i}}" data-idx="{{$i}}" loading="lazy">
+  <img src="{{$src}}" data-orig-src="{{$src}}" alt="Page {{$i}}" data-idx="{{$i}}" loading="lazy">
   {{end}}
 </main>
 <footer class="rfoot">
@@ -1324,6 +1657,64 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
 </div>
 {{end}}
 
+<nav class="rbar-bot" id="rbarBot" aria-label="Page navigation">
+  {{if .PrevURL}}<a class="rbtn" id="prevCh" href="{{.PrevURL}}">← <span class="lbl-sm">Prev Ch</span></a>{{else}}<span class="rbtn disabled">← <span class="lbl-sm">Prev Ch</span></span>{{end}}
+  <div class="scrubber">
+    <span class="rcounter" id="counter">Page 1 / {{.PageCount}}</span>
+    <input type="range" id="pageSlider" min="1" max="{{if gt .PageCount 0}}{{.PageCount}}{{else}}1{{end}}" value="1" aria-label="Page scrubber">
+  </div>
+  {{if .NextURL}}<a class="rbtn" id="nextCh" href="{{.NextURL}}"><span class="lbl-sm">Next Ch</span> →</a>{{else}}<span class="rbtn disabled"><span class="lbl-sm">Next Ch</span> →</span>{{end}}
+</nav>
+
+<div class="rbackdrop" id="rbackdrop"></div>
+<aside class="rdrawer" id="rdrawer" aria-label="Reader Settings">
+  <div class="drawer-head">
+    <h2>Reader Settings</h2>
+    <button class="rbtn" type="button" id="closeDrawerBtn" aria-label="Close settings">✕</button>
+  </div>
+
+  <div class="dgroup">
+    <h3>Reading Mode</h3>
+    <div class="dopts">
+      <button class="dopt" type="button" data-mode="webtoon">Webtoon (Vertical)</button>
+      <button class="dopt" type="button" data-mode="single-rtl">Single Page (RTL)</button>
+      <button class="dopt" type="button" data-mode="single-ltr">Single Page (LTR)</button>
+      <button class="dopt" type="button" data-mode="double-rtl">Double Page (RTL)</button>
+      <button class="dopt" type="button" data-mode="double-ltr">Double Page (LTR)</button>
+    </div>
+  </div>
+
+  <div class="dgroup">
+    <h3>Image Fit</h3>
+    <div class="dopts row">
+      <button class="dopt" type="button" data-fit="fit-width">Fit Width</button>
+      <button class="dopt" type="button" data-fit="fit-height">Fit Height</button>
+      <button class="dopt" type="button" data-fit="fit-screen">Fit Screen</button>
+      <button class="dopt" type="button" data-fit="fit-original">Original</button>
+    </div>
+  </div>
+
+  <div class="dgroup">
+    <h3>Background</h3>
+    <div class="dopts row">
+      <button class="dopt" type="button" data-bg="black">Pitch Black</button>
+      <button class="dopt" type="button" data-bg="ink">Dark Ink</button>
+      <button class="dopt" type="button" data-bg="paper">Warm Paper</button>
+    </div>
+  </div>
+
+  <div class="dgroup">
+    <h3>Shortcuts</h3>
+    <ul class="kbd-list">
+      <li><span>Prev / Next Page</span><span><kbd>←</kbd> <kbd>→</kbd></span></li>
+      <li><span>Advance Page</span><kbd>Space</kbd></li>
+      <li><span>Toggle Bars</span><kbd>F</kbd></li>
+      <li><span>Settings Drawer</span><kbd>S</kbd></li>
+      {{if .HasTranslator}}<li><span>Translate Page</span><kbd>T</kbd></li>{{end}}
+    </ul>
+  </div>
+</aside>
+
 <script nonce="{{.Nonce}}">
 (function(){
   const stage = document.getElementById("stage");
@@ -1331,17 +1722,65 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
   const imgs = Array.from(stage.querySelectorAll("img"));
   const total = imgs.length;
   const counter = document.getElementById("counter");
+  const slider = document.getElementById("pageSlider");
   const markBtn = document.getElementById("markReadBtn");
+  const settingsBtn = document.getElementById("settingsBtn");
+  const closeDrawerBtn = document.getElementById("closeDrawerBtn");
+  const backdrop = document.getElementById("rbackdrop");
+  const translateBtn = document.getElementById("translateBtn");
+  const ttoast = document.getElementById("ttoast");
+  const tspinner = document.getElementById("tspinner");
+  const ttoastMsg = document.getElementById("ttoastMsg");
+
   const modeBtns = Array.from(document.querySelectorAll("[data-mode]"));
+  const fitBtns = Array.from(document.querySelectorAll("[data-fit]"));
+  const bgBtns = Array.from(document.querySelectorAll("[data-bg]"));
+
   const markURL = stage.dataset.markUrl;
   let isRead = stage.dataset.read === "true";
   let autoMarked = isRead;
   let idx = 0;
+
+  // Restore persisted settings (with migration from legacy rtl/ltr values).
   let mode = localStorage.getItem("yata_reader_mode") || "webtoon";
-  if (!["webtoon", "rtl", "ltr"].includes(mode)) mode = "webtoon";
+  if (mode === "rtl") mode = "single-rtl";
+  if (mode === "ltr") mode = "single-ltr";
+  if (!["webtoon", "single-rtl", "single-ltr", "double-rtl", "double-ltr"].includes(mode)) mode = "webtoon";
+
+  let fit = localStorage.getItem("yata_reader_fit") || "fit-screen";
+  if (!["fit-width", "fit-height", "fit-screen", "fit-original"].includes(fit)) fit = "fit-screen";
+
+  let bg = localStorage.getItem("yata_reader_bg") || "ink";
+  if (!["black", "ink", "paper"].includes(bg)) bg = "ink";
+
+  // Live translation state
+  let translateOn = false;
+  const translatedURLs = new Map();
+  const pendingLoads = new Set();
+  let toastTimer = null;
+
+  function isRTL() { return mode === "single-rtl" || mode === "double-rtl"; }
+  function isDouble() { return mode === "double-rtl" || mode === "double-ltr"; }
+  function stepSize() { return isDouble() ? 2 : 1; }
+
+  function visibleIndices() {
+    if (total === 0) return [];
+    if (isDouble()) {
+      return idx + 1 < total ? [idx, idx + 1] : [idx];
+    }
+    return [idx];
+  }
 
   function updateCounter() {
-    if (counter) counter.textContent = (idx + 1) + " / " + total;
+    if (total === 0) return;
+    if (counter) {
+      if (isDouble() && idx + 1 < total) {
+        counter.textContent = "Page " + (idx + 1) + "–" + (idx + 2) + " / " + total;
+      } else {
+        counter.textContent = "Page " + (idx + 1) + " / " + total;
+      }
+    }
+    if (slider) slider.value = String(idx + 1);
   }
 
   function sendMarkRead(want, pageIdx) {
@@ -1363,54 +1802,173 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
   }
 
   function maybeAutoMark() {
-    if (!autoMarked && total > 0 && idx >= total - 1) {
+    const lastVisible = isDouble() ? Math.min(idx + 1, total - 1) : idx;
+    if (!autoMarked && total > 0 && lastVisible >= total - 1) {
       autoMarked = true;
-      sendMarkRead(true, idx);
+      sendMarkRead(true, lastVisible);
     }
   }
 
-  function showPage(nextIdx) {
+  function showToast(msg, spinning, autoHideMs) {
+    if (!ttoast || !ttoastMsg) return;
+    clearTimeout(toastTimer);
+    ttoastMsg.textContent = msg;
+    if (tspinner) tspinner.style.display = spinning ? "inline-block" : "none";
+    ttoast.classList.add("show");
+    if (autoHideMs > 0) {
+      toastTimer = setTimeout(() => ttoast.classList.remove("show"), autoHideMs);
+    }
+  }
+
+  function hideToast() {
+    clearTimeout(toastTimer);
+    if (ttoast) ttoast.classList.remove("show");
+  }
+
+  function translatePageIndex(pageIdx) {
+    if (!translateBtn || !translateOn) return;
+    const im = imgs[pageIdx];
+    if (!im) return;
+    const orig = im.dataset.origSrc;
+    if (!orig) return;
+    if (translatedURLs.has(pageIdx)) {
+      im.src = translatedURLs.get(pageIdx);
+      return;
+    }
+    if (pendingLoads.has(pageIdx)) return;
+    pendingLoads.add(pageIdx);
+    const lang = translateBtn.dataset.lang || "";
+    const proxyURL = "/api/translations/proxy-page?src=" + encodeURIComponent(orig) + (lang ? "&lang=" + encodeURIComponent(lang) : "");
+    showToast("Translating page " + (pageIdx + 1) + "…", true, 0);
+
+    const pre = new Image();
+    pre.onload = () => {
+      pendingLoads.delete(pageIdx);
+      translatedURLs.set(pageIdx, proxyURL);
+      if (translateOn) im.src = proxyURL;
+      if (pendingLoads.size === 0) hideToast();
+    };
+    pre.onerror = () => {
+      pendingLoads.delete(pageIdx);
+      showToast("Translation unavailable for page " + (pageIdx + 1), false, 2600);
+    };
+    pre.src = proxyURL;
+  }
+
+  function applyTranslationState() {
+    if (!translateBtn) return;
+    translateBtn.classList.toggle("active", translateOn);
+    translateBtn.textContent = translateOn ? "Translated ✓" : "Translate";
+    if (!translateOn) {
+      hideToast();
+      imgs.forEach(im => { if (im.dataset.origSrc) im.src = im.dataset.origSrc; });
+      return;
+    }
+    visibleIndices().forEach(i => translatePageIndex(i));
+  }
+
+  function toggleTranslate() {
+    if (!translateBtn) return;
+    translateOn = !translateOn;
+    applyTranslationState();
+  }
+
+  function showPage(nextIdx, scrollInWebtoon) {
     if (total === 0) return;
     if (nextIdx < 0) nextIdx = 0;
     if (nextIdx >= total) nextIdx = total - 1;
+    if (isDouble()) {
+      nextIdx = nextIdx - (nextIdx % 2);
+    }
     idx = nextIdx;
-    imgs.forEach((im, i) => im.classList.toggle("current", i === idx));
+    const vis = new Set(visibleIndices());
+    imgs.forEach((im, i) => im.classList.toggle("current", vis.has(i)));
     updateCounter();
     maybeAutoMark();
-    if (mode !== "webtoon") window.scrollTo({top: 0});
+    if (translateOn) visibleIndices().forEach(i => translatePageIndex(i));
+    if (mode !== "webtoon") {
+      window.scrollTo({top: 0});
+    } else if (scrollInWebtoon && imgs[idx]) {
+      imgs[idx].scrollIntoView({block: "start"});
+    }
   }
 
   function setMode(m) {
     mode = m;
-    localStorage.setItem("yata_reader_mode", mode);
-    stage.classList.toggle("webtoon", mode === "webtoon");
-    stage.classList.toggle("single", mode !== "webtoon");
+    try { localStorage.setItem("yata_reader_mode", mode); } catch (e) {}
+    stage.classList.remove("mode-webtoon", "mode-single", "mode-double", "dir-rtl", "dir-ltr");
+    if (mode === "webtoon") {
+      stage.classList.add("mode-webtoon");
+    } else if (isDouble()) {
+      stage.classList.add("mode-double", isRTL() ? "dir-rtl" : "dir-ltr");
+    } else {
+      stage.classList.add("mode-single", isRTL() ? "dir-rtl" : "dir-ltr");
+    }
+    document.body.classList.toggle("is-webtoon", mode === "webtoon");
     modeBtns.forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
-    showPage(idx);
-    if (mode === "webtoon" && imgs[idx]) imgs[idx].scrollIntoView({block: "start"});
+    showPage(idx, mode === "webtoon");
+  }
+
+  function setFit(f) {
+    fit = f;
+    try { localStorage.setItem("yata_reader_fit", fit); } catch (e) {}
+    stage.classList.remove("fit-width", "fit-height", "fit-screen", "fit-original");
+    stage.classList.add(fit);
+    fitBtns.forEach(b => b.classList.toggle("active", b.dataset.fit === fit));
+  }
+
+  function setBg(b) {
+    bg = b;
+    try { localStorage.setItem("yata_reader_bg", bg); } catch (e) {}
+    document.body.classList.remove("bg-black", "bg-ink", "bg-paper");
+    document.body.classList.add("bg-" + bg);
+    bgBtns.forEach(btn => btn.classList.toggle("active", btn.dataset.bg === bg));
+  }
+
+  function toggleDrawer(force) {
+    if (typeof force === "boolean") document.body.classList.toggle("drawer-open", force);
+    else document.body.classList.toggle("drawer-open");
+  }
+
+  function toggleHUD() {
+    document.body.classList.toggle("hud-hidden");
   }
 
   modeBtns.forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  fitBtns.forEach(b => b.addEventListener("click", () => setFit(b.dataset.fit)));
+  bgBtns.forEach(b => b.addEventListener("click", () => setBg(b.dataset.bg)));
   if (markBtn) markBtn.addEventListener("click", () => sendMarkRead(!isRead, idx));
+  if (translateBtn) translateBtn.addEventListener("click", toggleTranslate);
+  if (settingsBtn) settingsBtn.addEventListener("click", () => toggleDrawer());
+  if (closeDrawerBtn) closeDrawerBtn.addEventListener("click", () => toggleDrawer(false));
+  if (backdrop) backdrop.addEventListener("click", () => toggleDrawer(false));
 
-  // Click navigation in single-page modes
+  if (slider) {
+    slider.addEventListener("input", () => {
+      const target = parseInt(slider.value, 10) - 1;
+      if (!Number.isNaN(target)) showPage(target, true);
+    });
+  }
+
+  // Tap/click zones: center 40% toggles HUD; left 30% / right 30% navigates in paged modes.
   stage.addEventListener("click", e => {
+    const x = e.clientX / Math.max(window.innerWidth, 1);
     if (mode === "webtoon") {
-      document.body.classList.toggle("zen");
+      if (x >= 0.3 && x <= 0.7) toggleHUD();
+      else toggleHUD();
       return;
     }
-    const rect = stage.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
+    const step = stepSize();
     if (x < 0.3) {
-      showPage(mode === "rtl" ? idx + 1 : idx - 1);
+      showPage(isRTL() ? idx + step : idx - step, false);
     } else if (x > 0.7) {
-      showPage(mode === "rtl" ? idx - 1 : idx + 1);
+      showPage(isRTL() ? idx - step : idx + step, false);
     } else {
-      document.body.classList.toggle("zen");
+      toggleHUD();
     }
   });
 
-  // Track visible page in webtoon mode
+  // Track visible page while scrolling in Webtoon mode
   if ("IntersectionObserver" in window) {
     const obs = new IntersectionObserver(entries => {
       if (mode !== "webtoon") return;
@@ -1421,6 +1979,7 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
             idx = i;
             updateCounter();
             maybeAutoMark();
+            if (translateOn) translatePageIndex(i);
           }
         }
       }
@@ -1429,26 +1988,39 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
   }
 
   document.addEventListener("keydown", e => {
-    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
-    if (e.key === "f" || e.key === "F") {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT")) return;
+    if (e.key === "Escape") {
+      toggleDrawer(false);
+    } else if (e.key === "f" || e.key === "F") {
       e.preventDefault();
-      document.body.classList.toggle("zen");
+      toggleHUD();
+    } else if (e.key === "s" || e.key === "S") {
+      e.preventDefault();
+      toggleDrawer();
+    } else if ((e.key === "t" || e.key === "T") && translateBtn) {
+      e.preventDefault();
+      toggleTranslate();
     } else if (e.key === "ArrowLeft") {
-      if (mode === "rtl") { e.preventDefault(); showPage(idx + 1); }
-      else if (mode === "ltr") { e.preventDefault(); showPage(idx - 1); }
+      if (mode !== "webtoon") {
+        e.preventDefault();
+        showPage(isRTL() ? idx + stepSize() : idx - stepSize(), false);
+      }
     } else if (e.key === "ArrowRight") {
-      if (mode === "rtl") { e.preventDefault(); showPage(idx - 1); }
-      else if (mode === "ltr") { e.preventDefault(); showPage(idx + 1); }
+      if (mode !== "webtoon") {
+        e.preventDefault();
+        showPage(isRTL() ? idx - stepSize() : idx + stepSize(), false);
+      }
     } else if (e.key === " ") {
       if (mode !== "webtoon") {
         e.preventDefault();
-        showPage(idx + 1);
+        showPage(idx + stepSize(), false);
       }
     }
   });
 
+  setBg(bg);
+  setFit(fit);
   setMode(mode);
 })();
 </script>
 `))
-

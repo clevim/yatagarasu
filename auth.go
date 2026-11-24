@@ -166,7 +166,6 @@ func (g *gate) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if subtle.ConstantTimeCompare([]byte(r.PostFormValue("key")), []byte(key)) != 1 {
 		time.Sleep(g.thr.penalty())
-		w.WriteHeader(http.StatusUnauthorized)
 		askForKey(w, "That key was not accepted.")
 		return
 	}

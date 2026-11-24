@@ -10,8 +10,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -154,11 +156,15 @@ func (s shelf) handleTranslatePageImage(w http.ResponseWriter, r *http.Request) 
 	if targetLang == "" {
 		targetLang = it.lang
 	}
+	s.serveTranslatedPNG(w, r, it, imgBytes, targetLang)
+}
 
+func (s shelf) serveTranslatedPNG(w http.ResponseWriter, r *http.Request, it *imageTranslatorClient, imgBytes []byte, targetLang string) {
 	sum := sha256.Sum256(imgBytes)
 	cachePath := s.renderedPagePath(hex.EncodeToString(sum[:]) + "|" + targetLang)
 	if cached, err := os.ReadFile(cachePath); err == nil && len(cached) > 0 {
 		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "private, max-age=86400")
 		w.Header().Set("X-Yata-Cache", "hit")
 		w.Write(cached)
 		return
@@ -177,6 +183,84 @@ func (s shelf) handleTranslatePageImage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Set("X-Yata-Cache", "miss")
 	w.Write(pngBytes)
 }
+
+// handleTranslateProxyPage translates a local manga page on demand for the
+// built-in web reader. To prevent SSRF, it strictly accepts only Yatagarasu's
+// own `/api/suwayomi/image?path=...` or `/api/shelf/{chapterId}/page/{index}`
+// paths and fetches the image bytes internally.
+func (s shelf) handleTranslateProxyPage(w http.ResponseWriter, r *http.Request) {
+	it := s.imageTranslator()
+	if it == nil {
+		http.Error(w, "image translator sidecar is not configured (set YATA_IMAGE_TRANSLATOR_URL)", http.StatusServiceUnavailable)
+		return
+	}
+
+	src := strings.TrimSpace(r.URL.Query().Get("src"))
+	if src == "" || !strings.HasPrefix(src, "/") || strings.HasPrefix(src, "//") || strings.Contains(src, "\\") || strings.Contains(src, "..") {
+		http.Error(w, "invalid local page src", http.StatusBadRequest)
+		return
+	}
+	u, err := url.Parse(src)
+	if err != nil || u.IsAbs() || u.Scheme != "" || u.Host != "" {
+		http.Error(w, "invalid local page src", http.StatusBadRequest)
+		return
+	}
+
+	var imgBytes []byte
+	switch {
+	case u.Path == "/api/suwayomi/image":
+		imgPath := strings.TrimSpace(u.Query().Get("path"))
+		if imgPath == "" || !strings.HasPrefix(imgPath, "/") || strings.HasPrefix(imgPath, "//") || strings.Contains(imgPath, "..") || strings.Contains(imgPath, "\\") {
+			http.Error(w, "invalid suwayomi image path", http.StatusBadRequest)
+			return
+		}
+		suw := s.suwayomi()
+		if suw == nil {
+			http.Error(w, "suwayomi not configured", http.StatusServiceUnavailable)
+			return
+		}
+		imgBytes, err = suw.fetchImageBytes(r.Context(), imgPath)
+		if err != nil {
+			http.Error(w, "could not fetch suwayomi page: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+
+	case strings.HasPrefix(u.Path, "/api/shelf/"):
+		parts := strings.Split(u.Path, "/")
+		if len(parts) != 6 || parts[1] != "api" || parts[2] != "shelf" || parts[4] != "page" {
+			http.Error(w, "invalid shelf page src", http.StatusBadRequest)
+			return
+		}
+		chID, err1 := strconv.ParseInt(parts[3], 10, 64)
+		idx, err2 := strconv.Atoi(parts[5])
+		if err1 != nil || err2 != nil || idx < 0 {
+			http.Error(w, "invalid shelf page src", http.StatusBadRequest)
+			return
+		}
+		imgBytes, err = s.readShelfChapterPageBytes(chID, idx)
+		if err != nil {
+			http.Error(w, "could not read shelf page: "+err.Error(), http.StatusNotFound)
+			return
+		}
+
+	default:
+		http.Error(w, "invalid local page src", http.StatusBadRequest)
+		return
+	}
+
+	if len(imgBytes) == 0 {
+		http.Error(w, "empty page image", http.StatusBadGateway)
+		return
+	}
+
+	targetLang := strings.TrimSpace(r.URL.Query().Get("lang"))
+	if targetLang == "" {
+		targetLang = it.lang
+	}
+	s.serveTranslatedPNG(w, r, it, imgBytes, targetLang)
+}
+

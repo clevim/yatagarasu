@@ -356,6 +356,7 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("PUT /api/translations/context", s.handlePutTranslationContext)
 	mux.HandleFunc("POST /api/translations/translate", s.handleTranslate)
 	mux.HandleFunc("POST /api/translations/page", s.handleTranslatePageImage)
+	mux.HandleFunc("GET /api/translations/proxy-page", s.handleTranslateProxyPage)
 	mux.HandleFunc("GET /api/backups", s.handleListBackups)
 	mux.HandleFunc("POST /api/backups", s.handleUploadBackup)
 	mux.HandleFunc("GET /api/backups/{id}", s.handleDownloadBackup)

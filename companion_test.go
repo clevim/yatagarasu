@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -805,3 +806,332 @@ func TestImageTranslatorSidecarAndCache(t *testing.T) {
 		t.Fatalf("expected 1 sidecar call, got %d", calls.Load())
 	}
 }
+
+func TestTranslateProxyPageAndSSRFRejection(t *testing.T) {
+	mockSuw, _, _, _ := newMockSuwayomiWebUI(t)
+	defer mockSuw.Close()
+
+	var mitCalls atomic.Int32
+	mockMIT := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/translate/with-form/image" {
+			mitCalls.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			w.Write([]byte("\x89PNG-PROXY-TRANSLATED"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockMIT.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	st.ImageTranslatorURL = mockMIT.URL
+	st.ImageTranslatorLang = "PTB"
+	if err := cfg.save(st); err != nil {
+		t.Fatal(err)
+	}
+	s := shelf{dir: dir, cfg: cfg}
+
+	// Create a local shelf CBZ chapter so we can test /api/shelf/{id}/page/{idx} too.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fw, _ := zw.Create("01.jpg")
+	_, _ = fw.Write([]byte("LOCAL-CBZ-PAGE-0"))
+	_ = zw.Close()
+	if err := os.WriteFile(s.cbz(42), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.save(Entry{ChapterID: 42, ChapterURL: "/ch/42", MangaTitle: "Berserk", ChapterName: "Ch 1", ChapterNumber: 1, UploadedAt: now()})
+
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// 1. Reader HTML exposes Translate button, Settings drawer, Scrubber, and all 5 modes.
+	readResp, err := http.Get(srv.URL + "/read/501")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody, _ := io.ReadAll(readResp.Body)
+	readResp.Body.Close()
+	for _, want := range []string{
+		`id="translateBtn"`, `id="pageSlider"`, `Reader Settings`,
+		`Webtoon (Vertical)`, `Single Page (RTL)`, `Single Page (LTR)`,
+		`Double Page (RTL)`, `Double Page (LTR)`, `Fit Screen`, `Warm Paper`,
+	} {
+		if !strings.Contains(string(readBody), want) {
+			t.Errorf("/read/501 missing %q", want)
+		}
+	}
+
+	// 2. Proxy-translate a Suwayomi page: first miss, second cache hit.
+	suwSrc := "/api/suwayomi/image?path=" + url.QueryEscape("/api/v1/chapter/501/page/0")
+	r1, err := http.Get(srv.URL + "/api/translations/proxy-page?src=" + url.QueryEscape(suwSrc) + "&lang=PTB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b1, _ := io.ReadAll(r1.Body)
+	r1.Body.Close()
+	if r1.StatusCode != http.StatusOK || string(b1) != "\x89PNG-PROXY-TRANSLATED" || r1.Header.Get("X-Yata-Cache") != "miss" {
+		t.Fatalf("proxy-page suwayomi miss unexpected: %d %q cache=%s", r1.StatusCode, string(b1), r1.Header.Get("X-Yata-Cache"))
+	}
+
+	r2, err := http.Get(srv.URL + "/api/translations/proxy-page?src=" + url.QueryEscape(suwSrc) + "&lang=PTB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := io.ReadAll(r2.Body)
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusOK || string(b2) != "\x89PNG-PROXY-TRANSLATED" || r2.Header.Get("X-Yata-Cache") != "hit" {
+		t.Fatalf("proxy-page suwayomi hit unexpected: %d %q cache=%s", r2.StatusCode, string(b2), r2.Header.Get("X-Yata-Cache"))
+	}
+	if mitCalls.Load() != 1 {
+		t.Fatalf("expected 1 sidecar call for cached suwayomi page, got %d", mitCalls.Load())
+	}
+
+	// 3. Proxy-translate a local shelf CBZ page.
+	rShelf, err := http.Get(srv.URL + "/api/translations/proxy-page?src=" + url.QueryEscape("/api/shelf/42/page/0") + "&lang=PTB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bShelf, _ := io.ReadAll(rShelf.Body)
+	rShelf.Body.Close()
+	if rShelf.StatusCode != http.StatusOK || string(bShelf) != "\x89PNG-PROXY-TRANSLATED" {
+		t.Fatalf("proxy-page shelf unexpected: %d %q", rShelf.StatusCode, string(bShelf))
+	}
+
+	// 4. SSRF rejection: external URLs, protocol-relative URLs, path traversal, and non-page local endpoints must return 400.
+	badSrcs := []string{
+		"",
+		"http://169.254.169.254/latest/meta-data/",
+		"https://evil.example/page.png",
+		"//evil.example/page.png",
+		"/api/health",
+		"/api/suwayomi/image?path=http://evil.example/x",
+		"/api/suwayomi/image?path=../../etc/passwd",
+		"/api/shelf/42/page/../0",
+		"/api/shelf/42/file",
+	}
+	for _, bad := range badSrcs {
+		resp, err := http.Get(srv.URL + "/api/translations/proxy-page?src=" + url.QueryEscape(bad))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 Bad Request for SSRF src %q, got %d", bad, resp.StatusCode)
+		}
+	}
+}
+
+func TestExtensionRepoManagementAndGlobalSearchAndLibraryGrid(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		repos = []string{"https://example.org/initial/index.min.json"}
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gql struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gql); err != nil {
+			http.Error(w, "bad gql", http.StatusBadRequest)
+			return
+		}
+		switch {
+		case strings.Contains(gql.Query, "aboutServer"):
+			writeJSON(w, map[string]any{"data": map[string]any{"aboutServer": map[string]any{"version": "v2.0.0"}}})
+		case strings.Contains(gql.Query, "GetExtensionRepos"):
+			mu.Lock()
+			cp := append([]string(nil), repos...)
+			mu.Unlock()
+			writeJSON(w, map[string]any{"data": map[string]any{"settings": map[string]any{"extensionRepos": cp}}})
+		case strings.Contains(gql.Query, "SetExtensionRepos"):
+			mu.Lock()
+			repos = nil
+			if raw, ok := gql.Variables["repos"].([]any); ok {
+				for _, item := range raw {
+					if s, ok := item.(string); ok {
+						repos = append(repos, s)
+					}
+				}
+			}
+			cp := append([]string(nil), repos...)
+			mu.Unlock()
+			writeJSON(w, map[string]any{"data": map[string]any{"setSettings": map[string]any{"settings": map[string]any{"extensionRepos": cp}}}})
+		case strings.Contains(gql.Query, "FetchExtensions"):
+			writeJSON(w, map[string]any{"data": map[string]any{"fetchExtensions": map[string]any{"extensions": []any{}}}})
+		case strings.Contains(gql.Query, "ListExtensions"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"extensions": map[string]any{
+						"nodes": []map[string]any{
+							{"pkgName": "eu.kanade.tachiyomi.extension.en.mangadex", "name": "MangaDex", "lang": "en", "versionName": "1.4.2", "isInstalled": true},
+							{"pkgName": "eu.kanade.tachiyomi.extension.pt.slimeread", "name": "SlimeRead", "lang": "pt-BR", "versionName": "1.0.1", "isInstalled": false},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "ListSources"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"sources": map[string]any{
+						"nodes": []map[string]any{
+							{"id": "101", "name": "MangaDex", "lang": "en", "supportsLatest": true},
+							{"id": "202", "name": "Comick", "lang": "en", "supportsLatest": false},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "FetchSourceManga"):
+			srcID, _ := gql.Variables["source"].(string)
+			title := "Vagabond"
+			id := 55
+			if srcID == "202" {
+				title = "Vagabond (Comick)"
+				id = 88
+			}
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"fetchSourceManga": map[string]any{
+						"hasNextPage": false,
+						"mangas": []map[string]any{
+							{"id": id, "title": title, "thumbnailUrl": "/api/v1/manga/55/thumbnail", "inLibrary": true, "sourceId": srcID},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "ListLibrary"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"categories": map[string]any{
+						"nodes": []map[string]any{
+							{"id": 1, "name": "Seinen", "order": 1},
+						},
+					},
+					"mangas": map[string]any{
+						"nodes": []map[string]any{
+							{
+								"id":            55,
+								"sourceId":      "101",
+								"url":           "/manga/vagabond",
+								"title":         "Vagabond",
+								"thumbnailUrl":  "/api/v1/manga/55/thumbnail",
+								"unreadCount":   12,
+								"downloadCount": 5,
+								"chapters":      map[string]any{"totalCount": 30},
+								"categories":    map[string]any{"nodes": []map[string]any{{"name": "Seinen"}}},
+							},
+						},
+					},
+				},
+			})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	// 1. /browse?tab=extensions displays Extension Repositories panel + lang filter
+	resp, err := http.Get(srv.URL + "/browse?tab=extensions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, want := range []string{"Extension Repositories", "https://example.org/initial/index.min.json", "extLangFilter", "pt-BR"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("/browse?tab=extensions missing %q", want)
+		}
+	}
+
+	// 2. Add a Keiyoushi repo via POST /browse/extensions
+	keiyoushi := "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json"
+	addResp, err := client.PostForm(srv.URL+"/browse/extensions", url.Values{
+		"action":  {"add-repo"},
+		"repoUrl": {keiyoushi},
+	})
+	if err != nil || addResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add-repo failed: %v %v", err, addResp)
+	}
+	addResp.Body.Close()
+
+	mu.Lock()
+	if len(repos) != 2 || repos[1] != keiyoushi {
+		t.Fatalf("expected keiyoushi repo added, got %v", repos)
+	}
+	mu.Unlock()
+
+	// Invalid repo scheme is rejected without modifying repos
+	badResp, err := client.PostForm(srv.URL+"/browse/extensions", url.Values{
+		"action":  {"add-repo"},
+		"repoUrl": {"javascript:alert(1)"},
+	})
+	if err != nil || badResp.StatusCode != http.StatusSeeOther || !strings.Contains(badResp.Header.Get("Location"), "problem=") {
+		t.Fatalf("expected invalid repo URL rejected, got %v %v", err, badResp)
+	}
+	badResp.Body.Close()
+
+	// 3. Remove the initial repo via POST /browse/extensions
+	remResp, err := client.PostForm(srv.URL+"/browse/extensions", url.Values{
+		"action":  {"remove-repo"},
+		"repoUrl": {"https://example.org/initial/index.min.json"},
+	})
+	if err != nil || remResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("remove-repo failed: %v %v", err, remResp)
+	}
+	remResp.Body.Close()
+
+	mu.Lock()
+	if len(repos) != 1 || repos[0] != keiyoushi {
+		t.Fatalf("expected only keiyoushi repo remaining, got %v", repos)
+	}
+	mu.Unlock()
+
+	// 4. Global Search (/browse?tab=sources&source=all&q=Vagabond)
+	gResp, err := http.Get(srv.URL + "/browse?tab=sources&source=all&q=Vagabond")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gBody, _ := io.ReadAll(gResp.Body)
+	gResp.Body.Close()
+	for _, want := range []string{"All sources (Global Search)", "MangaDex", "Comick", "Vagabond (Comick)", "/manga/55", "/manga/88"} {
+		if !strings.Contains(string(gBody), want) {
+			t.Errorf("global search missing %q", want)
+		}
+	}
+
+	// 5. Integrated Cover-Grid Library (/library)
+	libResp, err := http.Get(srv.URL + "/library")
+	if err != nil {
+		t.Fatal(err)
+	}
+	libBody, _ := io.ReadAll(libResp.Body)
+	libResp.Body.Close()
+	for _, want := range []string{
+		"Vagabond", "/manga/55", "/api/suwayomi/image?path=",
+		"12 unread", "5 downloaded", "Seinen", "Filter library...",
+		"Update Library", `id="btnGrid"`, `id="btnList"`,
+	} {
+		if !strings.Contains(string(libBody), want) {
+			t.Errorf("/library missing %q", want)
+		}
+	}
+}
+

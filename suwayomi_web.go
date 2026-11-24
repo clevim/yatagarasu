@@ -2,7 +2,9 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ---- Image proxy ------------------------------------------------------------
@@ -35,6 +39,11 @@ func (s shelf) handleSuwayomiImage(w http.ResponseWriter, r *http.Request) {
 
 // ---- Browse & Extensions ----------------------------------------------------
 
+type globalSearchGroup struct {
+	Source SuwayomiSource
+	Mangas []SuwayomiMangaCard
+}
+
 func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 	entries, _ := s.list()
 	nav := s.buildNav(r, "browse", len(entries))
@@ -53,32 +62,47 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 		browseType = "SEARCH"
 	}
 	extQ := strings.TrimSpace(r.URL.Query().Get("eq"))
+	extLang := strings.TrimSpace(r.URL.Query().Get("lang"))
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
 	}
 
 	var (
-		sources         []SuwayomiSource
-		selectedSource  *SuwayomiSource
-		browseResult    *SuwayomiBrowseResult
-		installedExts   []SuwayomiExtension
-		availableExts   []SuwayomiExtension
-		problem         = r.URL.Query().Get("problem")
-		note            = r.URL.Query().Get("note")
-		suwConfigured   bool
+		sources        []SuwayomiSource
+		selectedSource *SuwayomiSource
+		browseResult   *SuwayomiBrowseResult
+		globalMode     bool
+		globalResults  []globalSearchGroup
+		extRepos       []string
+		extLangs       []string
+		installedExts  []SuwayomiExtension
+		availableExts  []SuwayomiExtension
+		problem        = r.URL.Query().Get("problem")
+		note           = r.URL.Query().Get("note")
+		suwConfigured  bool
 	)
 
 	if suw := s.suwayomi(); suw != nil {
 		suwConfigured = true
 		if tab == "extensions" {
+			if repos, err := suw.getExtensionRepos(r.Context()); err == nil {
+				extRepos = repos
+			}
 			exts, err := suw.listExtensions(r.Context())
 			if err != nil {
 				problem = "Could not load extensions from Suwayomi: " + err.Error()
 			} else {
+				langSet := map[string]struct{}{}
 				needle := strings.ToLower(extQ)
 				for _, e := range exts {
-					if needle != "" && !strings.Contains(strings.ToLower(e.Name), needle) && !strings.Contains(strings.ToLower(e.Lang), needle) {
+					if e.Lang != "" {
+						langSet[e.Lang] = struct{}{}
+					}
+					if extLang != "" && !strings.EqualFold(e.Lang, extLang) {
+						continue
+					}
+					if needle != "" && !strings.Contains(strings.ToLower(e.Name), needle) && !strings.Contains(strings.ToLower(e.Lang), needle) && !strings.Contains(strings.ToLower(e.PkgName), needle) {
 						continue
 					}
 					if e.IsInstalled {
@@ -87,6 +111,10 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 						availableExts = append(availableExts, e)
 					}
 				}
+				for l := range langSet {
+					extLangs = append(extLangs, l)
+				}
+				sort.Strings(extLangs)
 			}
 		} else {
 			var err error
@@ -94,28 +122,36 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				problem = "Could not load sources from Suwayomi: " + err.Error()
 			} else if len(sources) > 0 {
-				if selectedSourceID == "" {
-					selectedSourceID = sources[0].ID
-				}
-				for i := range sources {
-					if sources[i].ID == selectedSourceID {
-						selectedSource = &sources[i]
-						break
+				if selectedSourceID == "all" {
+					globalMode = true
+					browseType = "SEARCH"
+					if searchQ != "" {
+						globalResults = runGlobalSearch(r.Context(), suw, sources, searchQ)
 					}
-				}
-				if selectedSource == nil {
-					selectedSource = &sources[0]
-					selectedSourceID = sources[0].ID
-				}
-				if browseType == "LATEST" && !selectedSource.SupportsLatest {
-					browseType = "POPULAR"
-				}
-				if browseType != "SEARCH" || searchQ != "" {
-					res, err := suw.browseSource(r.Context(), selectedSourceID, browseType, searchQ, page)
-					if err != nil {
-						problem = "Browse failed: " + err.Error()
-					} else {
-						browseResult = res
+				} else {
+					if selectedSourceID == "" {
+						selectedSourceID = sources[0].ID
+					}
+					for i := range sources {
+						if sources[i].ID == selectedSourceID {
+							selectedSource = &sources[i]
+							break
+						}
+					}
+					if selectedSource == nil {
+						selectedSource = &sources[0]
+						selectedSourceID = sources[0].ID
+					}
+					if browseType == "LATEST" && !selectedSource.SupportsLatest {
+						browseType = "POPULAR"
+					}
+					if browseType != "SEARCH" || searchQ != "" {
+						res, err := suw.browseSource(r.Context(), selectedSourceID, browseType, searchQ, page)
+						if err != nil {
+							problem = "Browse failed: " + err.Error()
+						} else {
+							browseResult = res
+						}
 					}
 				}
 			}
@@ -133,9 +169,14 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 		"Sources":        sources,
 		"SelectedSource": selectedSource,
 		"SourceID":       selectedSourceID,
+		"GlobalMode":     globalMode,
+		"GlobalResults":  globalResults,
 		"BrowseType":     browseType,
 		"Query":          searchQ,
 		"ExtQuery":       extQ,
+		"ExtLang":        extLang,
+		"ExtLangs":       extLangs,
+		"ExtRepos":       extRepos,
 		"Page":           page,
 		"PrevPage":       page - 1,
 		"NextPage":       page + 1,
@@ -147,6 +188,38 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		log.Printf("yata: rendering browse page failed: %v", err)
 	}
+}
+
+func runGlobalSearch(ctx context.Context, suw *suwayomiClient, sources []SuwayomiSource, query string) []globalSearchGroup {
+	limit := len(sources)
+	if limit > 25 {
+		limit = 25
+	}
+	results := make([]globalSearchGroup, limit)
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		go func(idx int, src SuwayomiSource) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			sctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+			defer cancel()
+			res, err := suw.browseSource(sctx, src.ID, "SEARCH", query, 1)
+			if err == nil && res != nil && len(res.Mangas) > 0 {
+				results[idx] = globalSearchGroup{Source: src, Mangas: res.Mangas}
+			}
+		}(i, sources[i])
+	}
+	wg.Wait()
+	var out []globalSearchGroup
+	for _, g := range results {
+		if len(g.Mangas) > 0 {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 func (s shelf) handleExtensionAction(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +246,47 @@ func (s shelf) handleExtensionAction(w http.ResponseWriter, r *http.Request) {
 	case "uninstall":
 		err = suw.updateExtension(r.Context(), pkgName, false, false, true)
 		msg = "Extension uninstalled."
+	case "add-repo":
+		repoURL := strings.TrimSpace(r.PostFormValue("repoUrl"))
+		if !strings.HasPrefix(repoURL, "http://") && !strings.HasPrefix(repoURL, "https://") {
+			http.Redirect(w, r, "/browse?tab=extensions&problem=Repository+URL+must+start+with+http%3A%2F%2F+or+https%3A%2F%2F.", http.StatusSeeOther)
+			return
+		}
+		repos, rerr := suw.getExtensionRepos(r.Context())
+		if rerr != nil {
+			err = rerr
+			break
+		}
+		exists := false
+		for _, existing := range repos {
+			if existing == repoURL {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			repos = append(repos, repoURL)
+			_, err = suw.setExtensionRepos(r.Context(), repos)
+			if err == nil {
+				_ = suw.fetchExtensions(r.Context())
+			}
+		}
+		msg = "Extension repository added."
+	case "remove-repo":
+		repoURL := strings.TrimSpace(r.PostFormValue("repoUrl"))
+		repos, rerr := suw.getExtensionRepos(r.Context())
+		if rerr != nil {
+			err = rerr
+			break
+		}
+		filtered := make([]string, 0, len(repos))
+		for _, existing := range repos {
+			if existing != repoURL {
+				filtered = append(filtered, existing)
+			}
+		}
+		_, err = suw.setExtensionRepos(r.Context(), filtered)
+		msg = "Extension repository removed."
 	default:
 		http.Redirect(w, r, "/browse?tab=extensions&problem=Unknown+action.", http.StatusSeeOther)
 		return
@@ -417,9 +531,13 @@ func (s shelf) handleDownloadsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s shelf) handleDownloadsControl(w http.ResponseWriter, r *http.Request) {
+	redir := "/downloads"
+	if target := strings.TrimSpace(r.PostFormValue("redirect")); target == "/library" || target == "/downloads" {
+		redir = target
+	}
 	suw := s.suwayomi()
 	if suw == nil {
-		http.Redirect(w, r, "/downloads?problem=Suwayomi+not+configured.", http.StatusSeeOther)
+		http.Redirect(w, r, redir+"?problem=Suwayomi+not+configured.", http.StatusSeeOther)
 		return
 	}
 	action := strings.TrimSpace(r.PostFormValue("action"))
@@ -441,20 +559,20 @@ func (s shelf) handleDownloadsControl(w http.ResponseWriter, r *http.Request) {
 	case "dequeue":
 		chID, parseErr := strconv.ParseInt(r.PostFormValue("chapterId"), 10, 64)
 		if parseErr != nil || chID <= 0 {
-			http.Redirect(w, r, "/downloads?problem=Invalid+chapter+ID.", http.StatusSeeOther)
+			http.Redirect(w, r, redir+"?problem=Invalid+chapter+ID.", http.StatusSeeOther)
 			return
 		}
 		err = suw.dequeueDownload(r.Context(), chID)
 		msg = "Removed from queue."
 	default:
-		http.Redirect(w, r, "/downloads?problem=Unknown+action.", http.StatusSeeOther)
+		http.Redirect(w, r, redir+"?problem=Unknown+action.", http.StatusSeeOther)
 		return
 	}
 	if err != nil {
-		http.Redirect(w, r, "/downloads?problem="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, redir+"?problem="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/downloads?note="+url.QueryEscape(msg), http.StatusSeeOther)
+	http.Redirect(w, r, redir+"?note="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 // ---- Built-in Web Manga Reader (Suwayomi + Local Shelf CBZ) -----------------
@@ -733,6 +851,34 @@ func (s shelf) handleShelfChapterPage(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, rc)
 }
 
+func (s shelf) readShelfChapterPageBytes(id int64, idx int) ([]byte, error) {
+	if idx < 0 {
+		return nil, errors.New("bad page index")
+	}
+	zr, err := zip.OpenReader(s.cbz(id))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+
+	var imgs []*zip.File
+	for _, f := range zr.File {
+		if !f.FileInfo().IsDir() && isImageName(f.Name) {
+			imgs = append(imgs, f)
+		}
+	}
+	sort.Slice(imgs, func(i, j int) bool { return naturalLess(imgs[i].Name, imgs[j].Name) })
+	if idx >= len(imgs) {
+		return nil, errors.New("page out of range")
+	}
+	rc, err := imgs[idx].Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(io.LimitReader(rc, 32<<20))
+}
+
 type readerViewData struct {
 	MangaTitle   string
 	ChapterTitle string
@@ -746,22 +892,32 @@ type readerViewData struct {
 }
 
 func (s shelf) renderReader(w http.ResponseWriter, data readerViewData) {
+	it := s.imageTranslator()
+	hasTranslator := it != nil
+	translatorLang := ""
+	if it != nil {
+		translatorLang = it.lang
+	}
+
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := readerTmpl.Execute(w, map[string]any{
-		"Nonce":        nonce,
-		"MangaTitle":   data.MangaTitle,
-		"ChapterTitle": data.ChapterTitle,
-		"BackURL":      data.BackURL,
-		"BackLabel":    data.BackLabel,
-		"PrevURL":      data.PrevURL,
-		"NextURL":      data.NextURL,
-		"MarkReadURL":  data.MarkReadURL,
-		"IsRead":       data.IsRead,
-		"Pages":        data.Pages,
-		"PageCount":    len(data.Pages),
+		"Nonce":          nonce,
+		"MangaTitle":     data.MangaTitle,
+		"ChapterTitle":   data.ChapterTitle,
+		"BackURL":        data.BackURL,
+		"BackLabel":      data.BackLabel,
+		"PrevURL":        data.PrevURL,
+		"NextURL":        data.NextURL,
+		"MarkReadURL":    data.MarkReadURL,
+		"IsRead":         data.IsRead,
+		"Pages":          data.Pages,
+		"PageCount":      len(data.Pages),
+		"HasTranslator":  hasTranslator,
+		"TranslatorLang": translatorLang,
 	}); err != nil {
 		log.Printf("yata: rendering reader page failed: %v", err)
 	}
 }
+

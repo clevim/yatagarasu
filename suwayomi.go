@@ -1026,6 +1026,9 @@ func (c *suwayomiClient) proxyImage(ctx context.Context, imgPath string, w http.
 	if ct == "" {
 		ct = "image/jpeg"
 	}
+	if !strings.HasPrefix(strings.ToLower(ct), "image/") {
+		return fmt.Errorf("unexpected non-image content-type %q", ct)
+	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	if cl := resp.Header.Get("Content-Length"); cl != "" {
@@ -1036,3 +1039,160 @@ func (c *suwayomiClient) proxyImage(ctx context.Context, imgPath string, w http.
 	return err
 }
 
+func (c *suwayomiClient) fetchImageBytes(ctx context.Context, imgPath string) ([]byte, error) {
+	imgPath = strings.TrimSpace(imgPath)
+	if !strings.HasPrefix(imgPath, "/") || strings.HasPrefix(imgPath, "//") || strings.Contains(imgPath, "..") {
+		return nil, errors.New("invalid suwayomi image path")
+	}
+	target := c.baseURL + imgPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("suwayomi image http %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+}
+
+type SuwayomiLibraryManga struct {
+	ID            int64
+	SourceID      int64
+	URL           string
+	Title         string
+	ThumbnailURL  string
+	UnreadCount   int
+	DownloadCount int
+	TotalChapters int
+	Categories    []string
+}
+
+type SuwayomiLibraryData struct {
+	Categories []SyncCategory
+	Mangas     []SuwayomiLibraryManga
+}
+
+func (c *suwayomiClient) listLibrary(ctx context.Context) (*SuwayomiLibraryData, error) {
+	var data struct {
+		Categories struct {
+			Nodes []struct {
+				ID    int    `json:"id"`
+				Name  string `json:"name"`
+				Order int    `json:"order"`
+			} `json:"nodes"`
+		} `json:"categories"`
+		Mangas struct {
+			Nodes []struct {
+				ID            int64  `json:"id"`
+				SourceID      string `json:"sourceId"`
+				URL           string `json:"url"`
+				Title         string `json:"title"`
+				ThumbnailURL  string `json:"thumbnailUrl"`
+				UnreadCount   int    `json:"unreadCount"`
+				DownloadCount int    `json:"downloadCount"`
+				Chapters      struct {
+					TotalCount int `json:"totalCount"`
+				} `json:"chapters"`
+				Categories struct {
+					Nodes []struct {
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"categories"`
+			} `json:"nodes"`
+		} `json:"mangas"`
+	}
+	q := `query ListLibrary {
+		categories { nodes { id name order } }
+		mangas(condition: { inLibrary: true }) {
+			nodes {
+				id
+				sourceId
+				url
+				title
+				thumbnailUrl
+				unreadCount
+				downloadCount
+				chapters { totalCount }
+				categories { nodes { name } }
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	out := &SuwayomiLibraryData{}
+	for _, cat := range data.Categories.Nodes {
+		if strings.EqualFold(cat.Name, "Default") {
+			continue
+		}
+		out.Categories = append(out.Categories, SyncCategory{
+			Name:  cat.Name,
+			Order: cat.Order,
+		})
+	}
+	for _, m := range data.Mangas.Nodes {
+		sid, _ := strconv.ParseInt(m.SourceID, 10, 64)
+		var cats []string
+		for _, cat := range m.Categories.Nodes {
+			if !strings.EqualFold(cat.Name, "Default") {
+				cats = append(cats, cat.Name)
+			}
+		}
+		out.Mangas = append(out.Mangas, SuwayomiLibraryManga{
+			ID:            m.ID,
+			SourceID:      sid,
+			URL:           m.URL,
+			Title:         m.Title,
+			ThumbnailURL:  suwayomiImageURL(m.ThumbnailURL),
+			UnreadCount:   m.UnreadCount,
+			DownloadCount: m.DownloadCount,
+			TotalChapters: m.Chapters.TotalCount,
+			Categories:    cats,
+		})
+	}
+	return out, nil
+}
+
+func (c *suwayomiClient) getExtensionRepos(ctx context.Context) ([]string, error) {
+	var data struct {
+		Settings struct {
+			ExtensionRepos []string `json:"extensionRepos"`
+		} `json:"settings"`
+	}
+	q := `query GetExtensionRepos {
+		settings { extensionRepos }
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	return data.Settings.ExtensionRepos, nil
+}
+
+func (c *suwayomiClient) setExtensionRepos(ctx context.Context, repos []string) ([]string, error) {
+	if repos == nil {
+		repos = []string{}
+	}
+	var data struct {
+		SetSettings struct {
+			Settings struct {
+				ExtensionRepos []string `json:"extensionRepos"`
+			} `json:"settings"`
+		} `json:"setSettings"`
+	}
+	mut := `mutation SetExtensionRepos($repos: [String!]!) {
+		setSettings(input: { settings: { extensionRepos: $repos } }) {
+			settings { extensionRepos }
+		}
+	}`
+	if err := c.graphql(ctx, mut, map[string]any{"repos": repos}, &data); err != nil {
+		return nil, err
+	}
+	return data.SetSettings.Settings.ExtensionRepos, nil
+}

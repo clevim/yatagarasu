@@ -182,7 +182,7 @@ func mergeSyncIntoState(st *persistedSyncState, in SyncPayload, serverNowMs int6
 	// 5. Mangas + chapters + merged sources.
 	for _, m := range in.Mangas {
 		key := SyncMangaKey{SourceID: m.SourceID, URL: m.URL}.str()
-		if delAt, wasDeleted := st.DeletedAt[key]; wasDeleted && m.UpdatedAt > 0 && m.UpdatedAt < delAt {
+		if delAt, wasDeleted := st.DeletedAt[key]; wasDeleted && (m.UpdatedAt == 0 || m.UpdatedAt < delAt) {
 			continue
 		}
 		delete(st.DeletedAt, key)

@@ -73,8 +73,13 @@ type navState struct {
 }
 
 type libraryMangaRow struct {
+	SuwayomiID    int64
 	Title         string
+	Initial       string
+	ThumbnailURL  string
 	Categories    []string
+	UnreadCount   int
+	DownloadCount int
 	ReadCount     int
 	TotalCount    int
 	ProgressPct   int
@@ -316,13 +321,74 @@ func (s shelf) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func titleInitial(t string) string {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return "?"
+	}
+	for _, r := range t {
+		return strings.ToUpper(string(r))
+	}
+	return "?"
+}
+
+func mergeStringSet(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range a {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 	entries, _ := s.list()
 	st := s.loadSyncState()
 	selectedCat := strings.TrimSpace(r.URL.Query().Get("cat"))
+	problem := r.URL.Query().Get("problem")
+	note := r.URL.Query().Get("note")
 
-	cats := make([]SyncCategory, 0, len(st.Categories))
+	var (
+		suwConnected bool
+		suwLib       *SuwayomiLibraryData
+	)
+	if suw := s.suwayomi(); suw != nil {
+		suwConnected = true
+		var err error
+		suwLib, err = suw.listLibrary(r.Context())
+		if err != nil && problem == "" {
+			problem = "Could not fetch live Suwayomi library: " + err.Error()
+		}
+	}
+
+	catMap := make(map[string]SyncCategory, len(st.Categories))
 	for _, c := range st.Categories {
+		catMap[c.Name] = c
+	}
+	if suwLib != nil {
+		for _, c := range suwLib.Categories {
+			if _, exists := catMap[c.Name]; !exists {
+				catMap[c.Name] = c
+			}
+		}
+	}
+	cats := make([]SyncCategory, 0, len(catMap))
+	for _, c := range catMap {
 		cats = append(cats, c)
 	}
 	sort.Slice(cats, func(i, j int) bool {
@@ -332,12 +398,115 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 		return cats[i].Name < cats[j].Name
 	})
 
-	var totalChapters, readChapters, mergedTotal int
-	rows := make([]libraryMangaRow, 0, len(st.Mangas))
+	// Build merged manga list keyed by sourceId|url, with title fallback.
+	allRows := make([]*libraryMangaRow, 0, len(st.Mangas))
+	byKey := make(map[string]*libraryMangaRow, len(st.Mangas))
+	byTitle := make(map[string]*libraryMangaRow, len(st.Mangas))
+
 	for _, m := range st.Mangas {
+		rc := 0
+		for _, ch := range m.Chapters {
+			if ch.Read {
+				rc++
+			}
+		}
+		tot := len(m.Chapters)
+		unread := tot - rc
+		if unread < 0 {
+			unread = 0
+		}
+		pct := 0
+		if tot > 0 {
+			pct = rc * 100 / tot
+		}
+		upd := m.UpdatedAt
+		if upd > 1e12 {
+			upd /= 1000
+		}
+		row := &libraryMangaRow{
+			Title:       m.Title,
+			Initial:     titleInitial(m.Title),
+			Categories:  append([]string(nil), m.Categories...),
+			UnreadCount: unread,
+			ReadCount:   rc,
+			TotalCount:  tot,
+			ProgressPct: pct,
+			MergedCount: len(m.MergedSources),
+			Updated:     humanTime(upd),
+		}
+		allRows = append(allRows, row)
+		if m.SourceID != 0 && m.URL != "" {
+			byKey[fmt.Sprintf("%d|%s", m.SourceID, m.URL)] = row
+		}
+		if norm := strings.ToLower(strings.TrimSpace(m.Title)); norm != "" {
+			if _, exists := byTitle[norm]; !exists {
+				byTitle[norm] = row
+			}
+		}
+	}
+
+	if suwLib != nil {
+		for _, m := range suwLib.Mangas {
+			var row *libraryMangaRow
+			if m.SourceID != 0 && m.URL != "" {
+				row = byKey[fmt.Sprintf("%d|%s", m.SourceID, m.URL)]
+			}
+			if row == nil {
+				row = byTitle[strings.ToLower(strings.TrimSpace(m.Title))]
+			}
+			if row != nil {
+				row.SuwayomiID = m.ID
+				if m.ThumbnailURL != "" {
+					row.ThumbnailURL = m.ThumbnailURL
+				}
+				row.DownloadCount = m.DownloadCount
+				if m.TotalChapters > 0 {
+					row.TotalCount = m.TotalChapters
+					row.UnreadCount = m.UnreadCount
+					rc := m.TotalChapters - m.UnreadCount
+					if rc < 0 {
+						rc = 0
+					}
+					row.ReadCount = rc
+					row.ProgressPct = rc * 100 / m.TotalChapters
+				} else if m.UnreadCount > 0 {
+					row.UnreadCount = m.UnreadCount
+				}
+				row.Categories = mergeStringSet(row.Categories, m.Categories)
+			} else {
+				tot := m.TotalChapters
+				rc := tot - m.UnreadCount
+				if rc < 0 {
+					rc = 0
+				}
+				pct := 0
+				if tot > 0 {
+					pct = rc * 100 / tot
+				}
+				row = &libraryMangaRow{
+					SuwayomiID:    m.ID,
+					Title:         m.Title,
+					Initial:       titleInitial(m.Title),
+					ThumbnailURL:  m.ThumbnailURL,
+					Categories:    m.Categories,
+					UnreadCount:   m.UnreadCount,
+					DownloadCount: m.DownloadCount,
+					ReadCount:     rc,
+					TotalCount:    tot,
+					ProgressPct:   pct,
+					Updated:       "live",
+				}
+				allRows = append(allRows, row)
+			}
+		}
+	}
+
+	var totalChapters, readChapters, mergedTotal int
+	rows := make([]libraryMangaRow, 0, len(allRows))
+	for _, row := range allRows {
 		if selectedCat != "" {
 			matched := false
-			for _, c := range m.Categories {
+			for _, c := range row.Categories {
 				if c == selectedCat {
 					matched = true
 					break
@@ -347,32 +516,10 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		rc := 0
-		for _, ch := range m.Chapters {
-			if ch.Read {
-				rc++
-			}
-		}
-		totalChapters += len(m.Chapters)
-		readChapters += rc
-		mergedTotal += len(m.MergedSources)
-		pct := 0
-		if len(m.Chapters) > 0 {
-			pct = rc * 100 / len(m.Chapters)
-		}
-		upd := m.UpdatedAt
-		if upd > 1e12 {
-			upd /= 1000
-		}
-		rows = append(rows, libraryMangaRow{
-			Title:       m.Title,
-			Categories:  m.Categories,
-			ReadCount:   rc,
-			TotalCount:  len(m.Chapters),
-			ProgressPct: pct,
-			MergedCount: len(m.MergedSources),
-			Updated:     humanTime(upd),
-		})
+		totalChapters += row.TotalCount
+		readChapters += row.ReadCount
+		mergedTotal += row.MergedCount
+		rows = append(rows, *row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return strings.ToLower(rows[i].Title) < strings.ToLower(rows[j].Title) })
 
@@ -398,22 +545,28 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nav := s.buildNav(r, "library", len(entries))
+	if len(allRows) > nav.LibraryCount {
+		nav.LibraryCount = len(allRows)
+	}
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := libraryTmpl.Execute(w, map[string]any{
-		"Nonce":         nonce,
-		"Nav":           nav,
-		"SelectedCat":   selectedCat,
-		"Categories":    cats,
-		"Mangas":        rows,
-		"TotalMangas":   len(st.Mangas),
-		"TotalChapters": totalChapters,
-		"ReadChapters":  readChapters,
-		"MergedTotal":   mergedTotal,
-		"Repos":         repos,
-		"Extensions":    exts,
-		"LastSync":      lastSync,
+		"Nonce":             nonce,
+		"Nav":               nav,
+		"SuwayomiConnected": suwConnected,
+		"SelectedCat":       selectedCat,
+		"Categories":        cats,
+		"Mangas":            rows,
+		"TotalMangas":       len(allRows),
+		"TotalChapters":     totalChapters,
+		"ReadChapters":      readChapters,
+		"MergedTotal":       mergedTotal,
+		"Repos":             repos,
+		"Extensions":        exts,
+		"LastSync":          lastSync,
+		"Note":              note,
+		"Problem":           problem,
 	}); err != nil {
 		log.Printf("yata: rendering library page failed: %v", err)
 	}
