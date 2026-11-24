@@ -39,9 +39,22 @@ type settings struct {
 	// Companion v2: optional zyddnys/manga-image-translator sidecar (OCR + LaMa inpainting + typesetting).
 	ImageTranslatorURL  string `json:"imageTranslatorUrl,omitempty"`
 	ImageTranslatorLang string `json:"imageTranslatorLang,omitempty"`
+	BurnInTranslations  bool   `json:"burnInTranslations,omitempty"`
+
+	// Companion v2: auto-delete Suwayomi downloads for read chapters beyond KeepReadChapters per manga.
+	AutoDeleteRead   bool `json:"autoDeleteRead,omitempty"`
+	KeepReadChapters int  `json:"keepReadChapters"`
 
 	// Companion v2: maximum .tachibk backups retained on disk (0 = default 10).
 	MaxBackups int `json:"maxBackups,omitempty"`
+}
+
+func parseBoolEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 type config struct {
@@ -53,6 +66,12 @@ type config struct {
 
 func loadConfig(dir string) *config {
 	maxBackups, _ := strconv.Atoi(os.Getenv("YATA_MAX_BACKUPS"))
+	keepRead := 2
+	if raw := strings.TrimSpace(os.Getenv("YATA_KEEP_READ_CHAPTERS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			keepRead = n
+		}
+	}
 	c := &config{
 		path: filepath.Join(dir, "settings.json"),
 		s: settings{
@@ -69,6 +88,9 @@ func loadConfig(dir string) *config {
 			TranslateModel:      strings.TrimSpace(os.Getenv("YATA_TRANSLATE_MODEL")),
 			ImageTranslatorURL:  trimSlash(os.Getenv("YATA_IMAGE_TRANSLATOR_URL")),
 			ImageTranslatorLang: strings.TrimSpace(os.Getenv("YATA_IMAGE_TRANSLATOR_LANG")),
+			BurnInTranslations:  parseBoolEnv(os.Getenv("YATA_BURN_IN_TRANSLATIONS")),
+			AutoDeleteRead:      parseBoolEnv(os.Getenv("YATA_AUTO_DELETE_READ")),
+			KeepReadChapters:    keepRead,
 			MaxBackups:          maxBackups,
 		},
 		loc: time.Local,
@@ -81,6 +103,9 @@ func loadConfig(dir string) *config {
 	c.s.ChartDays = validDays(c.s.ChartDays)
 	if c.s.MaxBackups <= 0 {
 		c.s.MaxBackups = 10
+	}
+	if c.s.KeepReadChapters < 0 {
+		c.s.KeepReadChapters = 2
 	}
 	if loc, err := loadLocation(c.s.Timezone); err == nil {
 		c.loc = loc
@@ -218,6 +243,17 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if r.PostForm.Has("imageTranslatorLang") {
 		next.ImageTranslatorLang = strings.TrimSpace(r.PostFormValue("imageTranslatorLang"))
 	}
+	if r.PostForm.Has("burnInTranslationsPresent") || r.PostForm.Has("burnInTranslations") {
+		next.BurnInTranslations = parseBoolEnv(r.PostFormValue("burnInTranslations"))
+	}
+	if r.PostForm.Has("autoDeleteReadPresent") || r.PostForm.Has("autoDeleteRead") {
+		next.AutoDeleteRead = parseBoolEnv(r.PostFormValue("autoDeleteRead"))
+	}
+	if r.PostForm.Has("keepReadChapters") {
+		if kr, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("keepReadChapters"))); err == nil && kr >= 0 {
+			next.KeepReadChapters = kr
+		}
+	}
 	if r.PostForm.Has("maxBackups") {
 		if mb, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("maxBackups"))); err == nil && mb > 0 {
 			next.MaxBackups = mb
@@ -255,6 +291,13 @@ func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem st
 	nav := s.buildNav(r, "settings", len(entries))
 	cachedLines, chapterFiles, _ := s.translationStats()
 
+	var trackers []SuwayomiTracker
+	if suw := s.suwayomi(); suw != nil {
+		if list, err := suw.listTrackers(r.Context()); err == nil {
+			trackers = list
+		}
+	}
+
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -280,16 +323,20 @@ func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem st
 		"TranslateModel":      cur.TranslateModel,
 		"ImageTranslatorURL":  cur.ImageTranslatorURL,
 		"ImageTranslatorLang": cur.ImageTranslatorLang,
+		"BurnInTranslations":  cur.BurnInTranslations,
+		"AutoDeleteRead":      cur.AutoDeleteRead,
+		"KeepReadChapters":    cur.KeepReadChapters,
+		"Trackers":            trackers,
 		"MaxBackups":          cur.MaxBackups,
-		"DayChoices":        []int{7, 14, 30},
-		"Zones":             commonZones,
-		"Entries":           len(entries),
-		"Events":            len(s.history()),
-		"CachedLines":       cachedLines,
-		"ChapterFiles":      chapterFiles,
-		"DataDir":           s.dir,
-		"Now":               time.Now().In(s.cfg.location()).Format("Mon 2 Jan 2006, 15:04 MST"),
-		"Version":           version,
+		"DayChoices":          []int{7, 14, 30},
+		"Zones":               commonZones,
+		"Entries":             len(entries),
+		"Events":              len(s.history()),
+		"CachedLines":         cachedLines,
+		"ChapterFiles":        chapterFiles,
+		"DataDir":             s.dir,
+		"Now":                 time.Now().In(s.cfg.location()).Format("Mon 2 Jan 2006, 15:04 MST"),
+		"Version":             version,
 	})
 	if err != nil {
 		log.Printf("yata: rendering the settings page failed: %v", err)

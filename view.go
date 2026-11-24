@@ -199,10 +199,11 @@ const navHeader = `
     <span class="nav-group">Reader</span>
     <a href="/library"{{if eq .Nav.Active "library"}} class="active"{{end}}><span>Library</span>{{if .Nav.LibraryCount}}<span class="pill">{{.Nav.LibraryCount}}</span>{{end}}</a>
     <a href="/updates"{{if eq .Nav.Active "updates"}} class="active"{{end}}><span>Updates</span></a>
+    <a href="/history"{{if eq .Nav.Active "history"}} class="active"{{end}}><span>History</span></a>
     <a href="/browse"{{if eq .Nav.Active "browse"}} class="active"{{end}}><span>Browse</span></a>
     <a href="/downloads"{{if eq .Nav.Active "downloads"}} class="active"{{end}}><span>Downloads</span></a>
     <span class="nav-group">Companion</span>
-    <a href="/"{{if eq .Nav.Active "shelf"}} class="active"{{end}}><span>KOReader Shelf</span>{{if .Nav.ShelfCount}}<span class="pill">{{.Nav.ShelfCount}}</span>{{end}}</a>
+    <a href="/shelf"{{if eq .Nav.Active "shelf"}} class="active"{{end}}><span>KOReader Shelf</span>{{if .Nav.ShelfCount}}<span class="pill">{{.Nav.ShelfCount}}</span>{{end}}</a>
     <a href="/translate"{{if eq .Nav.Active "translate"}} class="active"{{end}}><span>Translate</span>{{if .Nav.CacheCount}}<span class="pill">{{.Nav.CacheCount}}</span>{{end}}</a>
     <a href="/backups"{{if eq .Nav.Active "backups"}} class="active"{{end}}><span>Backups</span>{{if .Nav.BackupsCount}}<span class="pill">{{.Nav.BackupsCount}}</span>{{end}}</a>
     <a href="/settings"{{if eq .Nav.Active "settings"}} class="active"{{end}}><span>Settings</span></a>
@@ -660,6 +661,44 @@ var translateTmpl = template.Must(template.New("translate").Parse(`<!doctype htm
   {{end}}
 </section>
 
+<section class="panel" id="queue">
+  <div class="panel-head">
+    <h2>Image pre-translation queue</h2>
+    {{if .HasImageTranslator}}<span class="dot ok">{{.ImageTranslatorLang}}</span>{{else}}<span class="dot off">sidecar off</span>{{end}}
+  </div>
+  {{if not .HasImageTranslator}}
+  <p class="hint">Configure the optional <code>manga-image-translator</code> sidecar in <a href="/settings#translate">Settings</a> to pre-translate full manga chapters in the background into the disk cache.</p>
+  {{else}}
+  <div class="stats four" style="margin-bottom:.85rem">
+    <div class="stat"><b>{{.Queue.Pending}}</b><span>pending</span></div>
+    <div class="stat"><b>{{if .Queue.Active}}1{{else}}0{{end}}</b><span>active</span></div>
+    <div class="stat"><b>{{.Queue.Completed}}</b><span>completed</span></div>
+    <div class="stat"><b>{{.Queue.Errors}}</b><span>errors</span></div>
+  </div>
+  {{if .Queue.Active}}
+  <p class="hint" style="margin-bottom:.75rem">Currently translating: <strong>{{.Queue.Active.Title}}</strong> (<code>{{.Queue.Active.Source}}</code> #{{.Queue.Active.ChapterID}})</p>
+  {{end}}
+  {{if .Queue.Recent}}
+  <table>
+    <thead><tr><th>Chapter</th><th>Source</th><th>Pages</th><th>Status</th><th>Finished</th></tr></thead>
+    <tbody>
+      {{range .Queue.Recent}}
+      <tr>
+        <td>{{.Title}}</td>
+        <td><span class="tag muted">{{.Source}}</span></td>
+        <td class="num">{{.Pages}}</td>
+        <td>{{if eq .Status "done"}}<span class="tag accent">done</span>{{else}}<span class="tag muted" title="{{.Error}}">error</span>{{end}}</td>
+        <td class="when">{{.Finished}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="hint">No chapters pre-translated yet. Use the <strong>Pre-translate</strong> button on any manga chapter page to warm the rendered image cache.</p>
+  {{end}}
+  {{end}}
+</section>
+
 <section class="panel">
   <div class="actions-row">
     <div>
@@ -810,6 +849,35 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
         <input name="suwayomiPass" type="password" value="{{.SuwayomiPass}}" autocomplete="off">
       </label>
     </div>
+    <div class="row2" style="margin-top:.85rem;padding-top:.85rem;border-top:1px solid var(--line);align-items:end">
+      <label class="field" style="display:flex;flex-direction:column;gap:.3rem">
+        <span>Auto-delete read downloads</span>
+        <input type="hidden" name="autoDeleteReadPresent" value="1">
+        <span style="display:inline-flex;align-items:center;gap:.45rem;font-size:.875rem;color:var(--ink)">
+          <input type="checkbox" name="autoDeleteRead" value="true"{{if .AutoDeleteRead}} checked{{end}} style="width:auto;margin:0;accent-color:var(--accent-solid)">
+          Delete downloaded read chapters automatically on sync
+        </span>
+      </label>
+      <label class="field"><span>Keep newest read chapters per manga</span>
+        <input name="keepReadChapters" type="number" min="0" max="100" value="{{.KeepReadChapters}}">
+      </label>
+    </div>
+    {{if .Trackers}}
+    <div id="trackers" style="margin-top:.85rem;padding-top:.85rem;border-top:1px solid var(--line)">
+      <div class="panel-head" style="margin-bottom:.4rem">
+        <h3 style="margin:0;font-size:.95rem">Trackers</h3>
+        <span class="hint">OAuth sign-in is managed in Suwayomi-Server</span>
+      </div>
+      <ul class="facts">
+        {{range .Trackers}}
+        <li>
+          <span>{{.Name}}</span>
+          {{if .IsLoggedIn}}<span class="dot ok">connected</span>{{else}}<span class="dot off">not logged in</span>{{end}}
+        </li>
+        {{end}}
+      </ul>
+    </div>
+    {{end}}
   </section>
 
   <section class="panel" id="translate">
@@ -851,6 +919,14 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
         <em class="note">3-letter code used by manga-image-translator (e.g. <code>PTB</code>, <code>ENG</code>, <code>ESP</code>).</em>
       </label>
     </div>
+    <label class="field" style="margin-top:.65rem;display:flex;flex-direction:column;gap:.3rem">
+      <span>KOReader CBZ burn-in</span>
+      <input type="hidden" name="burnInTranslationsPresent" value="1">
+      <span style="display:inline-flex;align-items:center;gap:.45rem;font-size:.875rem;color:var(--ink)">
+        <input type="checkbox" name="burnInTranslations" value="true"{{if .BurnInTranslations}} checked{{end}} style="width:auto;margin:0;accent-color:var(--accent-solid)">
+        Serve pre-translated CBZ files to KOReader automatically (cached on disk)
+      </span>
+    </label>
   </section>
 
   <section class="panel">
@@ -1026,6 +1102,18 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
  .apk-divider{border-top:1px solid var(--line);margin-top:.95rem;padding-top:.85rem}
  .apk-form{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between}
  .apk-form input[type=file]{font:inherit;font-size:.825rem;color:var(--muted);max-width:20rem}
+ .filters-box{margin-bottom:1.15rem}
+ .filters-box>summary{cursor:pointer;font-weight:580;font-size:.9rem;list-style:none;display:flex;align-items:center;justify-content:space-between;user-select:none}
+ .filters-box>summary::-webkit-details-marker{display:none}
+ .filters-body{margin-top:.85rem;padding-top:.85rem;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:.75rem}
+ .filter-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(13rem,1fr));gap:.65rem .85rem;align-items:end}
+ .filter-hdr{grid-column:1/-1;font-size:.78rem;font-weight:620;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-top:.25rem}
+ .filter-sep{grid-column:1/-1;border:0;border-top:1px solid var(--line);margin:.2rem 0}
+ .filter-check{display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;cursor:pointer;padding:.35rem .55rem;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg)}
+ .filter-check input{accent-color:var(--accent-solid);margin:0}
+ .filter-group{grid-column:1/-1;border:1px solid var(--line);border-radius:var(--radius);padding:.65rem .8rem;background:var(--bg)}
+ .filter-group>summary{cursor:pointer;font-size:.85rem;font-weight:580;color:var(--ink)}
+ .filter-actions{display:flex;gap:.5rem;align-items:center;padding-top:.4rem}
 </style>
 <body><div class="wrap">
 ` + navHeader + `
@@ -1082,6 +1170,112 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
     </form>
   </div>
 
+  {{if and (not .GlobalMode) .SourceFilters}}
+  <details class="panel filters-box"{{if gt .ActiveFilterCount 0}} open{{end}}>
+    <summary>
+      <span>Source Filters{{if gt .ActiveFilterCount 0}} <span class="pill">{{.ActiveFilterCount}} active</span>{{end}}</span>
+      <span class="hint">Toggle filters</span>
+    </summary>
+    <form method="get" action="/browse" class="filters-body">
+      <input type="hidden" name="tab" value="sources">
+      <input type="hidden" name="source" value="{{.SourceID}}">
+      <input type="hidden" name="type" value="SEARCH">
+      <input type="hidden" name="f_applied" value="1">
+      {{if .Query}}<input type="hidden" name="q" value="{{.Query}}">{{end}}
+      <div class="filter-grid">
+        {{range .SourceFilters}}
+          {{if eq .Type "HeaderFilter"}}
+            <div class="filter-hdr">{{.Name}}</div>
+          {{else if eq .Type "SeparatorFilter"}}
+            <hr class="filter-sep">
+          {{else if eq .Type "CheckBoxFilter"}}
+            <label class="filter-check"><input type="checkbox" name="{{.FieldName}}" value="1"{{if .BoolVal}} checked{{end}}><span>{{.Name}}</span></label>
+          {{else if eq .Type "SelectFilter"}}
+            <label class="field" style="margin:0"><span>{{.Name}}</span>
+              <select name="{{.FieldName}}">
+                {{range .Options}}<option value="{{.Index}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+            </label>
+          {{else if eq .Type "TextFilter"}}
+            <label class="field" style="margin:0"><span>{{.Name}}</span>
+              <input name="{{.FieldName}}" value="{{.TextVal}}">
+            </label>
+          {{else if eq .Type "TriStateFilter"}}
+            <label class="field" style="margin:0"><span>{{.Name}}</span>
+              <select name="{{.FieldName}}">
+                <option value="IGNORE"{{if eq .TriVal "IGNORE"}} selected{{end}}>Ignore</option>
+                <option value="INCLUDE"{{if eq .TriVal "INCLUDE"}} selected{{end}}>Include</option>
+                <option value="EXCLUDE"{{if eq .TriVal "EXCLUDE"}} selected{{end}}>Exclude</option>
+              </select>
+            </label>
+          {{else if eq .Type "SortFilter"}}
+            <label class="field" style="margin:0"><span>{{.Name}}</span>
+              <select name="{{.FieldName}}_idx">
+                {{range .Options}}<option value="{{.Index}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+            </label>
+            <label class="field" style="margin:0"><span>Order</span>
+              <select name="{{.FieldName}}_asc">
+                <option value="false"{{if not .SortAsc}} selected{{end}}>Descending</option>
+                <option value="true"{{if .SortAsc}} selected{{end}}>Ascending</option>
+              </select>
+            </label>
+          {{else if eq .Type "GroupFilter"}}
+            <details class="filter-group">
+              <summary>{{.Name}}</summary>
+              <div class="filter-grid" style="margin-top:.65rem">
+                {{range .Children}}
+                  {{if eq .Type "HeaderFilter"}}
+                    <div class="filter-hdr">{{.Name}}</div>
+                  {{else if eq .Type "SeparatorFilter"}}
+                    <hr class="filter-sep">
+                  {{else if eq .Type "CheckBoxFilter"}}
+                    <label class="filter-check"><input type="checkbox" name="{{.FieldName}}" value="1"{{if .BoolVal}} checked{{end}}><span>{{.Name}}</span></label>
+                  {{else if eq .Type "SelectFilter"}}
+                    <label class="field" style="margin:0"><span>{{.Name}}</span>
+                      <select name="{{.FieldName}}">
+                        {{range .Options}}<option value="{{.Index}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+                      </select>
+                    </label>
+                  {{else if eq .Type "TextFilter"}}
+                    <label class="field" style="margin:0"><span>{{.Name}}</span>
+                      <input name="{{.FieldName}}" value="{{.TextVal}}">
+                    </label>
+                  {{else if eq .Type "TriStateFilter"}}
+                    <label class="field" style="margin:0"><span>{{.Name}}</span>
+                      <select name="{{.FieldName}}">
+                        <option value="IGNORE"{{if eq .TriVal "IGNORE"}} selected{{end}}>Ignore</option>
+                        <option value="INCLUDE"{{if eq .TriVal "INCLUDE"}} selected{{end}}>Include</option>
+                        <option value="EXCLUDE"{{if eq .TriVal "EXCLUDE"}} selected{{end}}>Exclude</option>
+                      </select>
+                    </label>
+                  {{else if eq .Type "SortFilter"}}
+                    <label class="field" style="margin:0"><span>{{.Name}}</span>
+                      <select name="{{.FieldName}}_idx">
+                        {{range .Options}}<option value="{{.Index}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+                      </select>
+                    </label>
+                    <label class="field" style="margin:0"><span>Order</span>
+                      <select name="{{.FieldName}}_asc">
+                        <option value="false"{{if not .SortAsc}} selected{{end}}>Descending</option>
+                        <option value="true"{{if .SortAsc}} selected{{end}}>Ascending</option>
+                      </select>
+                    </label>
+                  {{end}}
+                {{end}}
+              </div>
+            </details>
+          {{end}}
+        {{end}}
+      </div>
+      <div class="filter-actions">
+        <button class="btn sm primary" type="submit">Apply Filters</button>
+        <a class="btn sm ghost" href="/browse?tab=sources&source={{.SourceID}}&type=POPULAR">Reset</a>
+      </div>
+    </form>
+  </details>
+  {{end}}
+
   {{if .GlobalMode}}
     {{if eq .Query ""}}
     <section class="empty">
@@ -1128,11 +1322,11 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
   </div>
   <div class="pager">
     {{if gt .Page 1}}
-    <a class="btn sm" href="/browse?tab=sources&source={{.SourceID}}&type={{.BrowseType}}&q={{.Query}}&page={{.PrevPage}}">← Previous</a>
+    <a class="btn sm" href="/browse?tab=sources&source={{.SourceID}}&type={{.BrowseType}}&q={{.Query}}&page={{.PrevPage}}{{.FilterQS}}">← Previous</a>
     {{else}}<span></span>{{end}}
     <span class="hint">Page {{.Page}}</span>
     {{if .BrowseResult.HasNextPage}}
-    <a class="btn sm" href="/browse?tab=sources&source={{.SourceID}}&type={{.BrowseType}}&q={{.Query}}&page={{.NextPage}}">Next →</a>
+    <a class="btn sm" href="/browse?tab=sources&source={{.SourceID}}&type={{.BrowseType}}&q={{.Query}}&page={{.NextPage}}{{.FilterQS}}">Next →</a>
     {{else}}<span></span>{{end}}
   </div>
   {{else}}
@@ -1457,6 +1651,82 @@ var mangaTmpl = template.Must(template.New("manga").Parse(`<!doctype html>
 </section>
 {{end}}
 
+<section class="panel" id="trackers">
+  <div class="panel-head">
+    <h2>Trackers</h2>
+    <a class="btn ghost" href="/settings#trackers">Tracker status</a>
+  </div>
+  {{if .TrackRecords}}
+  <table style="margin-bottom:.85rem">
+    <thead><tr><th>Tracker</th><th>Title</th><th>Progress</th><th>Score</th><th></th></tr></thead>
+    <tbody>
+      {{range .TrackRecords}}
+      <tr>
+        <td><span class="tag accent">{{.TrackerName}}</span></td>
+        <td>
+          {{if .RemoteURL}}<a class="ch-link" href="{{.RemoteURL}}" target="_blank" rel="noopener noreferrer">{{.Title}}</a>{{else}}{{.Title}}{{end}}
+        </td>
+        <td class="num">{{.LastChapterRead}}{{if gt .TotalChapters 0}} / {{.TotalChapters}}{{end}}</td>
+        <td>{{if .DisplayScore}}{{.DisplayScore}}{{else if gt .Score 0.0}}{{.Score}}{{else}}—{{end}}</td>
+        <td class="state">
+          <form class="inline" method="post" action="/manga/{{$.Manga.ID}}/track">
+            <input type="hidden" name="action" value="unbind">
+            <input type="hidden" name="recordId" value="{{.ID}}">
+            <button class="btn ghost" type="submit">Unbind</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="hint" style="margin-bottom:.75rem">Not bound to any tracker yet.</p>
+  {{end}}
+
+  {{if .LoggedInTrackers}}
+  <form method="post" action="/manga/{{.Manga.ID}}/track" style="display:flex;flex-wrap:wrap;gap:.45rem;align-items:center">
+    <input type="hidden" name="action" value="search">
+    <select name="trackerId" aria-label="Tracker" style="padding:.4rem .6rem;font:inherit;font-size:.85rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:var(--radius)">
+      {{range .LoggedInTrackers}}
+      <option value="{{.ID}}"{{if eq .ID $.TrackSearchTrackerID}} selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+    <input name="query" value="{{if .TrackSearchQuery}}{{.TrackSearchQuery}}{{else}}{{.Manga.Title}}{{end}}" placeholder="Search tracker title..." style="flex:1;min-width:12rem;padding:.4rem .65rem;font:inherit;font-size:.85rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:var(--radius)">
+    <button class="btn sm primary" type="submit">Search Tracker</button>
+  </form>
+
+  {{if .TrackSearchResults}}
+  <table style="margin-top:.85rem">
+    <thead><tr><th>Match</th><th>Type</th><th>Chapters</th><th></th></tr></thead>
+    <tbody>
+      {{range .TrackSearchResults}}
+      <tr>
+        <td>
+          <strong>{{.Title}}</strong>
+          {{if .StartDate}}<span class="ch-sub">{{.StartDate}}{{if .PublishingStatus}} · {{.PublishingStatus}}{{end}}</span>{{end}}
+        </td>
+        <td><span class="tag muted">{{if .PublishingType}}{{.PublishingType}}{{else}}Manga{{end}}</span></td>
+        <td class="num">{{if gt .TotalChapters 0}}{{.TotalChapters}}{{else}}—{{end}}</td>
+        <td class="state">
+          <form class="inline" method="post" action="/manga/{{$.Manga.ID}}/track">
+            <input type="hidden" name="action" value="bind">
+            <input type="hidden" name="trackerId" value="{{.TrackerID}}">
+            <input type="hidden" name="remoteId" value="{{.RemoteID}}">
+            <button class="btn sm primary" type="submit">Bind</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else if .TrackSearchQuery}}
+  <p class="hint" style="margin-top:.65rem">No tracker matches for “{{.TrackSearchQuery}}”.</p>
+  {{end}}
+  {{else}}
+  <p class="hint">Sign in to AniList, MyAnimeList, or MangaUpdates in Suwayomi-Server to bind this manga.</p>
+  {{end}}
+</section>
+
 <section class="card-table">
   <header>
     <h2>Chapters</h2>
@@ -1477,6 +1747,15 @@ var mangaTmpl = template.Must(template.New("manga").Parse(`<!doctype html>
         <td class="when">{{.Uploaded}}</td>
         <td class="state">
           <a class="btn sm primary" href="/read/{{.ID}}">Read</a>
+          {{if $.HasImageTranslator}}
+          <form class="inline" method="post" action="/translate/queue">
+            <input type="hidden" name="source" value="suwayomi">
+            <input type="hidden" name="chapterId" value="{{.ID}}">
+            <input type="hidden" name="title" value="{{$.Manga.Title}} — {{.Name}}">
+            <input type="hidden" name="redirect" value="/manga/{{$.Manga.ID}}">
+            <button class="btn sm" type="submit" title="Pre-translate chapter pages into cache">Pre-translate</button>
+          </form>
+          {{end}}
           {{if .IsDownloaded}}
           <span class="tag">saved</span>
           <form class="inline" method="post" action="/manga/{{$.Manga.ID}}/chapter/{{.ID}}">
@@ -1565,6 +1844,10 @@ var downloadsTmpl = template.Must(template.New("downloads").Parse(`<!doctype htm
       <form method="post" action="/downloads/control">
         <input type="hidden" name="action" value="update-library">
         <button class="btn" type="submit">Update Library</button>
+      </form>
+      <form method="post" action="/downloads/control" data-confirm="Delete downloaded read chapters beyond your retention limit?">
+        <input type="hidden" name="action" value="cleanup-read">
+        <button class="btn" type="submit">Clean read downloads</button>
       </form>
     </div>
   </div>
@@ -2501,4 +2784,82 @@ for (const f of document.querySelectorAll("form[data-confirm]"))
   f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
 </script>
 `))
+
+var historyTmpl = template.Must(template.New("history").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>History — Yatagarasu</title>` + baseHead + `
+<style>
+ .hist-head{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem}
+ .hist-manga{display:inline-flex;align-items:center;gap:.65rem;text-decoration:none;color:var(--ink)}
+ .hist-manga:hover .hist-title{color:var(--accent)}
+ .hist-cover{width:34px;height:48px;border-radius:.3rem;object-fit:cover;background:var(--raise);border:1px solid var(--line);flex-shrink:0}
+ .hist-cover-ph{width:34px;height:48px;border-radius:.3rem;background:var(--raise);border:1px solid var(--line);flex-shrink:0;
+                display:inline-flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:620;color:var(--muted)}
+ .hist-title{font-weight:580;display:block;line-height:1.25}
+ .hist-ch{display:block;font-size:.82rem;color:var(--muted)}
+</style>
+<body><div class="wrap">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+<div class="hist-head">
+  <div>
+    <h1>Reading History <span class="pill">{{.Total}}</span></h1>
+  </div>
+  <span class="hint">Combined Suwayomi &amp; KOReader shelf timeline</span>
+</div>
+
+{{if .Groups}}
+  {{range .Groups}}
+  <section class="card-table">
+    <header>
+      <h2>{{.Label}}</h2>
+      <p>{{len .Items}} {{if eq (len .Items) 1}}chapter{{else}}chapters{{end}}</p>
+    </header>
+    <table>
+      <tbody>
+        {{range .Items}}
+        <tr>
+          <td>
+            {{if gt .MangaID 0}}
+            <a class="hist-manga" href="/manga/{{.MangaID}}">
+              {{if .ThumbnailURL}}<img class="hist-cover" src="{{.ThumbnailURL}}" alt="" loading="lazy">{{else}}<span class="hist-cover-ph">SUW</span>{{end}}
+              <span>
+                <span class="hist-title">{{.MangaTitle}}</span>
+                <span class="hist-ch">{{.ChapterName}}</span>
+              </span>
+            </a>
+            {{else}}
+            <div class="hist-manga">
+              <span class="hist-cover-ph">KO</span>
+              <span>
+                <span class="hist-title">{{.MangaTitle}}</span>
+                <span class="hist-ch">{{.ChapterName}}</span>
+              </span>
+            </div>
+            {{end}}
+          </td>
+          <td><span class="tag {{if eq .Source "suwayomi"}}accent{{else}}muted{{end}}">{{.Progress}}</span></td>
+          <td class="when">{{.When}}</td>
+          <td class="state">
+            <a class="btn sm primary" href="{{.ReadURL}}">Continue Reading</a>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+{{else}}
+<section class="empty">
+  <h2>No reading history yet</h2>
+  <p>Chapters you read in the web reader, Suwayomi, or KOReader will appear here grouped by day.</p>
+</section>
+{{end}}
+
+</div>
+`))
+
 

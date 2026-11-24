@@ -467,7 +467,36 @@ type SuwayomiBrowseResult struct {
 	Mangas      []SuwayomiMangaCard `json:"mangas"`
 }
 
-func (c *suwayomiClient) browseSource(ctx context.Context, sourceID, browseType, searchQuery string, page int) (*SuwayomiBrowseResult, error) {
+type SuwayomiSortSelection struct {
+	Index     int  `json:"index"`
+	Ascending bool `json:"ascending"`
+}
+
+type SuwayomiSourceFilter struct {
+	Position        int                    `json:"position"`
+	Type            string                 `json:"type"`
+	Name            string                 `json:"name"`
+	CheckBoxDefault bool                   `json:"checkBoxDefault,omitempty"`
+	SelectValues    []string               `json:"selectValues,omitempty"`
+	SelectDefault   int                    `json:"selectDefault,omitempty"`
+	TextDefault     string                 `json:"textDefault,omitempty"`
+	TriStateDefault string                 `json:"triStateDefault,omitempty"`
+	SortValues      []string               `json:"sortValues,omitempty"`
+	SortDefault     *SuwayomiSortSelection `json:"sortDefault,omitempty"`
+	Filters         []SuwayomiSourceFilter `json:"filters,omitempty"`
+}
+
+type SuwayomiFilterChange struct {
+	Position      int                    `json:"position"`
+	CheckBoxState *bool                  `json:"checkBoxState,omitempty"`
+	SelectState   *int                   `json:"selectState,omitempty"`
+	TextState     *string                `json:"textState,omitempty"`
+	TriState      *string                `json:"triState,omitempty"`
+	SortState     *SuwayomiSortSelection `json:"sortState,omitempty"`
+	GroupChange   *SuwayomiFilterChange  `json:"groupChange,omitempty"`
+}
+
+func (c *suwayomiClient) browseSource(ctx context.Context, sourceID, browseType, searchQuery string, page int, filters ...SuwayomiFilterChange) (*SuwayomiBrowseResult, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -485,8 +514,11 @@ func (c *suwayomiClient) browseSource(ctx context.Context, sourceID, browseType,
 	if t == "SEARCH" {
 		vars["query"] = searchQuery
 	}
-	mut := `mutation FetchSourceManga($source: LongString!, $type: FetchSourceMangaType!, $query: String, $page: Int!) {
-		fetchSourceManga(input: { source: $source, type: $type, query: $query, page: $page }) {
+	if len(filters) > 0 {
+		vars["filters"] = filters
+	}
+	mut := `mutation FetchSourceManga($source: LongString!, $type: FetchSourceMangaType!, $query: String, $page: Int!, $filters: [FilterChangeInput!]) {
+		fetchSourceManga(input: { source: $source, type: $type, query: $query, page: $page, filters: $filters }) {
 			hasNextPage
 			mangas {
 				id
@@ -615,21 +647,22 @@ type SuwayomiChapter struct {
 }
 
 type SuwayomiMangaDetail struct {
-	ID           int64             `json:"id"`
-	Title        string            `json:"title"`
-	Author       string            `json:"author"`
-	Artist       string            `json:"artist"`
-	Description  string            `json:"description"`
-	Genres       []string          `json:"genre"`
-	Status       string            `json:"status"`
-	ThumbnailURL string            `json:"thumbnailUrl"`
-	InLibrary    bool              `json:"inLibrary"`
-	SourceID     string            `json:"sourceId"`
-	SourceName   string            `json:"sourceName"`
-	SourceLang   string            `json:"sourceLang"`
-	Categories   []string          `json:"categories"`
-	CategoryIDs  []int             `json:"categoryIds"`
-	Chapters     []SuwayomiChapter `json:"chapters"`
+	ID           int64                 `json:"id"`
+	Title        string                `json:"title"`
+	Author       string                `json:"author"`
+	Artist       string                `json:"artist"`
+	Description  string                `json:"description"`
+	Genres       []string              `json:"genre"`
+	Status       string                `json:"status"`
+	ThumbnailURL string                `json:"thumbnailUrl"`
+	InLibrary    bool                  `json:"inLibrary"`
+	SourceID     string                `json:"sourceId"`
+	SourceName   string                `json:"sourceName"`
+	SourceLang   string                `json:"sourceLang"`
+	Categories   []string              `json:"categories"`
+	CategoryIDs  []int                 `json:"categoryIds"`
+	Chapters     []SuwayomiChapter     `json:"chapters"`
+	TrackRecords []SuwayomiTrackRecord `json:"trackRecords,omitempty"`
 }
 
 func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*SuwayomiMangaDetail, error) {
@@ -659,6 +692,9 @@ func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*Suwayomi
 			Chapters struct {
 				Nodes []SuwayomiChapter `json:"nodes"`
 			} `json:"chapters"`
+			TrackRecords struct {
+				Nodes []SuwayomiTrackRecord `json:"nodes"`
+			} `json:"trackRecords"`
 		} `json:"manga"`
 	}
 	q := `query GetManga($id: Int!) {
@@ -690,6 +726,20 @@ func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*Suwayomi
 					sourceOrder
 				}
 			}
+			trackRecords {
+				nodes {
+					id
+					trackerId
+					remoteId
+					title
+					status
+					displayScore
+					score
+					lastChapterRead
+					totalChapters
+					remoteUrl
+				}
+			}
 		}
 	}`
 	if err := c.graphql(ctx, q, map[string]any{"id": mangaID}, &data); err != nil {
@@ -711,6 +761,7 @@ func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*Suwayomi
 		InLibrary:    m.InLibrary,
 		SourceID:     m.SourceID,
 		Chapters:     m.Chapters.Nodes,
+		TrackRecords: m.TrackRecords.Nodes,
 	}
 	if m.Source != nil {
 		detail.SourceName = m.Source.Name
@@ -1668,3 +1719,373 @@ func (c *suwayomiClient) pushCategoriesAndRepos(ctx context.Context, cats []Sync
 		}
 	}
 }
+
+// ---- Dynamic Source Filters (B1) --------------------------------------------
+
+type rawSourceFilter struct {
+	TypeName        string                 `json:"__typename"`
+	Name            string                 `json:"name"`
+	CheckBoxDefault bool                   `json:"checkBoxDefault"`
+	SelectValues    []string               `json:"selectValues"`
+	SelectDefault   int                    `json:"selectDefault"`
+	TextDefault     string                 `json:"textDefault"`
+	TriStateDefault string                 `json:"triStateDefault"`
+	SortValues      []string               `json:"sortValues"`
+	SortDefault     *SuwayomiSortSelection `json:"sortDefault"`
+	GroupFilters    []rawSourceFilter      `json:"groupFilters"`
+}
+
+func convertRawFilters(raw []rawSourceFilter) []SuwayomiSourceFilter {
+	out := make([]SuwayomiSourceFilter, 0, len(raw))
+	for i, rf := range raw {
+		f := SuwayomiSourceFilter{
+			Position:        i,
+			Type:            rf.TypeName,
+			Name:            rf.Name,
+			CheckBoxDefault: rf.CheckBoxDefault,
+			SelectValues:    rf.SelectValues,
+			SelectDefault:   rf.SelectDefault,
+			TextDefault:     rf.TextDefault,
+			TriStateDefault: rf.TriStateDefault,
+			SortValues:      rf.SortValues,
+			SortDefault:     rf.SortDefault,
+		}
+		if f.Type == "TriStateFilter" && f.TriStateDefault == "" {
+			f.TriStateDefault = "IGNORE"
+		}
+		if len(rf.GroupFilters) > 0 {
+			f.Filters = convertRawFilters(rf.GroupFilters)
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func (c *suwayomiClient) getSourceFilters(ctx context.Context, sourceID string) ([]SuwayomiSourceFilter, error) {
+	var data struct {
+		Source struct {
+			ID      string            `json:"id"`
+			Filters []rawSourceFilter `json:"filters"`
+		} `json:"source"`
+	}
+	q := `query GetSourceFilters($id: LongString!) {
+		source(id: $id) {
+			id
+			filters {
+				__typename
+				... on HeaderFilter { name }
+				... on SeparatorFilter { name }
+				... on CheckBoxFilter { name checkBoxDefault: default }
+				... on SelectFilter { name selectValues: values selectDefault: default }
+				... on TextFilter { name textDefault: default }
+				... on TriStateFilter { name triStateDefault: default }
+				... on SortFilter { name sortValues: values sortDefault: default { index ascending } }
+				... on GroupFilter {
+					name
+					groupFilters: filters {
+						__typename
+						... on HeaderFilter { name }
+						... on SeparatorFilter { name }
+						... on CheckBoxFilter { name checkBoxDefault: default }
+						... on SelectFilter { name selectValues: values selectDefault: default }
+						... on TextFilter { name textDefault: default }
+						... on TriStateFilter { name triStateDefault: default }
+						... on SortFilter { name sortValues: values sortDefault: default { index ascending } }
+					}
+				}
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{"id": sourceID}, &data); err != nil {
+		return nil, err
+	}
+	return convertRawFilters(data.Source.Filters), nil
+}
+
+// ---- Global Reading History (B2) --------------------------------------------
+
+type SuwayomiHistoryChapter struct {
+	ID            int64
+	Name          string
+	ChapterNumber float64
+	LastReadAt    int64
+	LastPageRead  int
+	PageCount     int
+	IsRead        bool
+	MangaID       int64
+	MangaTitle    string
+	ThumbnailURL  string
+}
+
+func (c *suwayomiClient) listReadHistory(ctx context.Context, limit int) ([]SuwayomiHistoryChapter, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var data struct {
+		Chapters struct {
+			Nodes []struct {
+				ID            int64   `json:"id"`
+				Name          string  `json:"name"`
+				ChapterNumber float64 `json:"chapterNumber"`
+				LastReadAt    string  `json:"lastReadAt"`
+				LastPageRead  int     `json:"lastPageRead"`
+				PageCount     int     `json:"pageCount"`
+				IsRead        bool    `json:"isRead"`
+				Manga         *struct {
+					ID           int64  `json:"id"`
+					Title        string `json:"title"`
+					ThumbnailURL string `json:"thumbnailUrl"`
+				} `json:"manga"`
+			} `json:"nodes"`
+		} `json:"chapters"`
+	}
+	q := `query ReadHistory($first: Int!) {
+		chapters(
+			filter: { lastReadAt: { greaterThan: "0" } }
+			orderBy: LAST_READ_AT
+			orderByType: DESC
+			first: $first
+		) {
+			nodes {
+				id
+				name
+				chapterNumber
+				lastReadAt
+				lastPageRead
+				pageCount
+				isRead
+				manga {
+					id
+					title
+					thumbnailUrl
+				}
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{"first": limit}, &data); err != nil {
+		return nil, err
+	}
+	out := make([]SuwayomiHistoryChapter, 0, len(data.Chapters.Nodes))
+	for _, n := range data.Chapters.Nodes {
+		ts := parseSuwayomiUnix(n.LastReadAt)
+		if ts <= 0 {
+			continue
+		}
+		item := SuwayomiHistoryChapter{
+			ID:            n.ID,
+			Name:          n.Name,
+			ChapterNumber: n.ChapterNumber,
+			LastReadAt:    ts,
+			LastPageRead:  n.LastPageRead,
+			PageCount:     n.PageCount,
+			IsRead:        n.IsRead,
+		}
+		if n.Manga != nil {
+			item.MangaID = n.Manga.ID
+			item.MangaTitle = n.Manga.Title
+			item.ThumbnailURL = suwayomiImageURL(n.Manga.ThumbnailURL)
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// ---- Trackers (AniList / MAL / MangaUpdates) (B3) ---------------------------
+
+type flexInt64 int64
+
+func (f *flexInt64) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	s = strings.Trim(s, `"`)
+	if s == "" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	*f = flexInt64(n)
+	return nil
+}
+
+type SuwayomiTracker struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Icon       string `json:"icon"`
+	IsLoggedIn bool   `json:"isLoggedIn"`
+	AuthURL    string `json:"authUrl"`
+}
+
+type SuwayomiTrackRecord struct {
+	ID              int64     `json:"id"`
+	TrackerID       int       `json:"trackerId"`
+	TrackerName     string    `json:"-"`
+	RemoteID        flexInt64 `json:"remoteId"`
+	Title           string    `json:"title"`
+	Status          int       `json:"status"`
+	DisplayScore    string    `json:"displayScore"`
+	Score           float64   `json:"score"`
+	LastChapterRead float64   `json:"lastChapterRead"`
+	TotalChapters   int       `json:"totalChapters"`
+	RemoteURL       string    `json:"remoteUrl"`
+}
+
+type SuwayomiTrackSearchResult struct {
+	TrackerID        int       `json:"trackerId"`
+	RemoteID         flexInt64 `json:"remoteId"`
+	Title            string    `json:"title"`
+	CoverURL         string    `json:"coverUrl"`
+	PublishingType   string    `json:"publishingType"`
+	PublishingStatus string    `json:"publishingStatus"`
+	StartDate        string    `json:"startDate"`
+	TotalChapters    int       `json:"totalChapters"`
+	Summary          string    `json:"summary"`
+}
+
+func (c *suwayomiClient) listTrackers(ctx context.Context) ([]SuwayomiTracker, error) {
+	var data struct {
+		Trackers struct {
+			Nodes []SuwayomiTracker `json:"nodes"`
+		} `json:"trackers"`
+	}
+	q := `query ListTrackers {
+		trackers {
+			nodes {
+				id
+				name
+				icon
+				isLoggedIn
+				authUrl
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	out := data.Trackers.Nodes
+	for i := range out {
+		if strings.HasPrefix(out[i].Icon, "/") {
+			out[i].Icon = suwayomiImageURL(out[i].Icon)
+		}
+	}
+	return out, nil
+}
+
+func (c *suwayomiClient) searchTracker(ctx context.Context, trackerID int, query string) ([]SuwayomiTrackSearchResult, error) {
+	var data struct {
+		SearchTracker struct {
+			TrackSearches []SuwayomiTrackSearchResult `json:"trackSearches"`
+		} `json:"searchTracker"`
+	}
+	q := `query SearchTracker($trackerId: Int!, $query: String!) {
+		searchTracker(input: { trackerId: $trackerId, query: $query }) {
+			trackSearches {
+				trackerId
+				remoteId
+				title
+				coverUrl
+				publishingType
+				publishingStatus
+				startDate
+				totalChapters
+				summary
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{
+		"trackerId": trackerID,
+		"query":     query,
+	}, &data); err != nil {
+		return nil, err
+	}
+	return data.SearchTracker.TrackSearches, nil
+}
+
+func (c *suwayomiClient) bindTrack(ctx context.Context, mangaID int64, trackerID int, remoteID int64) error {
+	mut := `mutation BindTrack($mangaId: Int!, $trackerId: Int!, $remoteId: LongString!) {
+		bindTrack(input: { mangaId: $mangaId, trackerId: $trackerId, remoteId: $remoteId }) {
+			trackRecord { id }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{
+		"mangaId":   mangaID,
+		"trackerId": trackerID,
+		"remoteId":  strconv.FormatInt(remoteID, 10),
+	}, nil)
+}
+
+func (c *suwayomiClient) unbindTrack(ctx context.Context, recordID int64) error {
+	mut := `mutation UnbindTrack($recordId: Int!) {
+		unbindTrack(input: { recordId: $recordId }) {
+			trackRecord { id }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"recordId": recordID}, nil)
+}
+
+// ---- Downloaded Read Chapters Cleanup (C4) ----------------------------------
+
+type SuwayomiDownloadedChapter struct {
+	ID            int64   `json:"id"`
+	MangaID       int64   `json:"mangaId"`
+	ChapterNumber float64 `json:"chapterNumber"`
+	SourceOrder   int     `json:"sourceOrder"`
+	LastReadAt    int64   `json:"-"`
+}
+
+func (c *suwayomiClient) listDownloadedReadChapters(ctx context.Context) ([]SuwayomiDownloadedChapter, error) {
+	var data struct {
+		Chapters struct {
+			Nodes []struct {
+				ID            int64   `json:"id"`
+				MangaID       int64   `json:"mangaId"`
+				ChapterNumber float64 `json:"chapterNumber"`
+				SourceOrder   int     `json:"sourceOrder"`
+				LastReadAt    string  `json:"lastReadAt"`
+			} `json:"nodes"`
+		} `json:"chapters"`
+	}
+	q := `query DownloadedReadChapters {
+		chapters(condition: { isDownloaded: true, isRead: true }) {
+			nodes {
+				id
+				mangaId
+				chapterNumber
+				sourceOrder
+				lastReadAt
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	out := make([]SuwayomiDownloadedChapter, 0, len(data.Chapters.Nodes))
+	for _, n := range data.Chapters.Nodes {
+		out = append(out, SuwayomiDownloadedChapter{
+			ID:            n.ID,
+			MangaID:       n.MangaID,
+			ChapterNumber: n.ChapterNumber,
+			SourceOrder:   n.SourceOrder,
+			LastReadAt:    parseSuwayomiUnix(n.LastReadAt),
+		})
+	}
+	return out, nil
+}
+
+func (c *suwayomiClient) deleteDownloadedChapters(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	mut := `mutation DeleteDownloadedChapters($ids: [Int!]!) {
+		deleteDownloadedChapters(input: { ids: $ids }) {
+			chapters { id isDownloaded }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"ids": ids}, nil)
+}
+

@@ -44,6 +44,186 @@ type globalSearchGroup struct {
 	Mangas []SuwayomiMangaCard
 }
 
+type sourceFilterOptionView struct {
+	Index    int
+	Label    string
+	Selected bool
+}
+
+type sourceFilterView struct {
+	Position    int
+	FieldName   string
+	Type        string
+	Name        string
+	BoolVal     bool
+	TextVal     string
+	TriVal      string
+	SelectVal   int
+	SortIdx     int
+	SortAsc     bool
+	Options     []sourceFilterOptionView
+	Children    []sourceFilterView
+}
+
+func parseOneFilter(f SuwayomiSourceFilter, prefix string, q url.Values, applied bool, qsOut url.Values) (sourceFilterView, *SuwayomiFilterChange) {
+	v := sourceFilterView{
+		Position:  f.Position,
+		FieldName: prefix,
+		Type:      f.Type,
+		Name:      f.Name,
+	}
+	var ch *SuwayomiFilterChange
+
+	switch f.Type {
+	case "CheckBoxFilter":
+		val := f.CheckBoxDefault
+		if applied {
+			raw := q.Get(prefix)
+			val = raw == "1" || raw == "true" || raw == "on"
+			if val {
+				qsOut.Set(prefix, "1")
+			}
+			if val != f.CheckBoxDefault {
+				b := val
+				ch = &SuwayomiFilterChange{Position: f.Position, CheckBoxState: &b}
+			}
+		}
+		v.BoolVal = val
+
+	case "SelectFilter":
+		val := f.SelectDefault
+		if raw := q.Get(prefix); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n >= 0 && n < len(f.SelectValues) {
+				val = n
+				qsOut.Set(prefix, strconv.Itoa(n))
+				if val != f.SelectDefault {
+					idx := val
+					ch = &SuwayomiFilterChange{Position: f.Position, SelectState: &idx}
+				}
+			}
+		}
+		v.SelectVal = val
+		for i, lbl := range f.SelectValues {
+			v.Options = append(v.Options, sourceFilterOptionView{Index: i, Label: lbl, Selected: i == val})
+		}
+
+	case "TextFilter":
+		val := f.TextDefault
+		if q.Has(prefix) {
+			val = q.Get(prefix)
+			if val != "" {
+				qsOut.Set(prefix, val)
+			}
+			if val != f.TextDefault {
+				t := val
+				ch = &SuwayomiFilterChange{Position: f.Position, TextState: &t}
+			}
+		}
+		v.TextVal = val
+
+	case "TriStateFilter":
+		val := f.TriStateDefault
+		if val == "" {
+			val = "IGNORE"
+		}
+		if raw := strings.ToUpper(strings.TrimSpace(q.Get(prefix))); raw == "IGNORE" || raw == "INCLUDE" || raw == "EXCLUDE" {
+			val = raw
+			if val != "IGNORE" {
+				qsOut.Set(prefix, val)
+			}
+			if val != f.TriStateDefault && !(f.TriStateDefault == "" && val == "IGNORE") {
+				ts := val
+				ch = &SuwayomiFilterChange{Position: f.Position, TriState: &ts}
+			}
+		}
+		v.TriVal = val
+
+	case "SortFilter":
+		defIdx := 0
+		defAsc := false
+		if f.SortDefault != nil {
+			defIdx = f.SortDefault.Index
+			defAsc = f.SortDefault.Ascending
+		}
+		idx := defIdx
+		asc := defAsc
+		idxKey := prefix + "_idx"
+		ascKey := prefix + "_asc"
+		if raw := q.Get(idxKey); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n >= 0 && n < len(f.SortValues) {
+				idx = n
+				qsOut.Set(idxKey, strconv.Itoa(n))
+			}
+		}
+		if q.Has(ascKey) {
+			asc = q.Get(ascKey) == "true" || q.Get(ascKey) == "1"
+			if asc {
+				qsOut.Set(ascKey, "true")
+			} else {
+				qsOut.Set(ascKey, "false")
+			}
+		}
+		if idx != defIdx || asc != defAsc {
+			ch = &SuwayomiFilterChange{
+				Position:  f.Position,
+				SortState: &SuwayomiSortSelection{Index: idx, Ascending: asc},
+			}
+		}
+		v.SortIdx = idx
+		v.SortAsc = asc
+		for i, lbl := range f.SortValues {
+			v.Options = append(v.Options, sourceFilterOptionView{Index: i, Label: lbl, Selected: i == idx})
+		}
+	}
+	return v, ch
+}
+
+func buildSourceFilters(raw []SuwayomiSourceFilter, q url.Values) ([]sourceFilterView, []SuwayomiFilterChange, string) {
+	applied := q.Get("f_applied") == "1"
+	qsOut := url.Values{}
+	if applied {
+		qsOut.Set("f_applied", "1")
+	}
+	views := make([]sourceFilterView, 0, len(raw))
+	var changes []SuwayomiFilterChange
+
+	for _, f := range raw {
+		prefix := fmt.Sprintf("f_%d", f.Position)
+		if f.Type == "GroupFilter" {
+			gv := sourceFilterView{
+				Position:  f.Position,
+				FieldName: prefix,
+				Type:      f.Type,
+				Name:      f.Name,
+			}
+			for _, sub := range f.Filters {
+				subPrefix := fmt.Sprintf("f_%d_%d", f.Position, sub.Position)
+				sv, sc := parseOneFilter(sub, subPrefix, q, applied, qsOut)
+				gv.Children = append(gv.Children, sv)
+				if sc != nil {
+					changes = append(changes, SuwayomiFilterChange{
+						Position:    f.Position,
+						GroupChange: sc,
+					})
+				}
+			}
+			views = append(views, gv)
+			continue
+		}
+		fv, fc := parseOneFilter(f, prefix, q, applied, qsOut)
+		views = append(views, fv)
+		if fc != nil {
+			changes = append(changes, *fc)
+		}
+	}
+
+	filterQS := ""
+	if len(changes) > 0 {
+		filterQS = "&" + qsOut.Encode()
+	}
+	return views, changes, filterQS
+}
+
 func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 	entries, _ := s.list()
 	nav := s.buildNav(r, "browse", len(entries))
@@ -69,19 +249,22 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		sources        []SuwayomiSource
-		selectedSource *SuwayomiSource
-		browseResult   *SuwayomiBrowseResult
-		globalMode     bool
-		globalResults  []globalSearchGroup
-		extRepos       []string
-		extLangs       []string
-		updateExts     []SuwayomiExtension
-		installedExts  []SuwayomiExtension
-		availableExts  []SuwayomiExtension
-		problem        = r.URL.Query().Get("problem")
-		note           = r.URL.Query().Get("note")
-		suwConfigured  bool
+		sources           []SuwayomiSource
+		selectedSource    *SuwayomiSource
+		sourceFilters     []sourceFilterView
+		activeFilterCount int
+		filterQS          string
+		browseResult      *SuwayomiBrowseResult
+		globalMode        bool
+		globalResults     []globalSearchGroup
+		extRepos          []string
+		extLangs          []string
+		updateExts        []SuwayomiExtension
+		installedExts     []SuwayomiExtension
+		availableExts     []SuwayomiExtension
+		problem           = r.URL.Query().Get("problem")
+		note              = r.URL.Query().Get("note")
+		suwConfigured     bool
 	)
 
 	if suw := s.suwayomi(); suw != nil {
@@ -147,11 +330,19 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 						selectedSource = &sources[0]
 						selectedSourceID = sources[0].ID
 					}
+					var filterChanges []SuwayomiFilterChange
+					if rawFilters, ferr := suw.getSourceFilters(r.Context(), selectedSourceID); ferr == nil && len(rawFilters) > 0 {
+						sourceFilters, filterChanges, filterQS = buildSourceFilters(rawFilters, r.URL.Query())
+						activeFilterCount = len(filterChanges)
+					}
+					if len(filterChanges) > 0 {
+						browseType = "SEARCH"
+					}
 					if browseType == "LATEST" && !selectedSource.SupportsLatest {
 						browseType = "POPULAR"
 					}
-					if browseType != "SEARCH" || searchQ != "" {
-						res, err := suw.browseSource(r.Context(), selectedSourceID, browseType, searchQ, page)
+					if browseType != "SEARCH" || searchQ != "" || len(filterChanges) > 0 {
+						res, err := suw.browseSource(r.Context(), selectedSourceID, browseType, searchQ, page, filterChanges...)
 						if err != nil {
 							problem = "Browse failed: " + err.Error()
 						} else {
@@ -167,30 +358,33 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := browseTmpl.Execute(w, map[string]any{
-		"Nonce":          nonce,
-		"Nav":            nav,
-		"Configured":     suwConfigured,
-		"Tab":            tab,
-		"Sources":        sources,
-		"SelectedSource": selectedSource,
-		"SourceID":       selectedSourceID,
-		"GlobalMode":     globalMode,
-		"GlobalResults":  globalResults,
-		"BrowseType":     browseType,
-		"Query":          searchQ,
-		"ExtQuery":       extQ,
-		"ExtLang":        extLang,
-		"ExtLangs":       extLangs,
-		"ExtRepos":       extRepos,
-		"Page":           page,
-		"PrevPage":       page - 1,
-		"NextPage":       page + 1,
-		"BrowseResult":   browseResult,
-		"UpdateExts":     updateExts,
-		"InstalledExts":  installedExts,
-		"AvailableExts":  availableExts,
-		"Note":           note,
-		"Problem":        problem,
+		"Nonce":             nonce,
+		"Nav":               nav,
+		"Configured":        suwConfigured,
+		"Tab":               tab,
+		"Sources":           sources,
+		"SelectedSource":    selectedSource,
+		"SourceID":          selectedSourceID,
+		"SourceFilters":     sourceFilters,
+		"ActiveFilterCount": activeFilterCount,
+		"FilterQS":          filterQS,
+		"GlobalMode":        globalMode,
+		"GlobalResults":     globalResults,
+		"BrowseType":        browseType,
+		"Query":             searchQ,
+		"ExtQuery":          extQ,
+		"ExtLang":           extLang,
+		"ExtLangs":          extLangs,
+		"ExtRepos":          extRepos,
+		"Page":              page,
+		"PrevPage":          page - 1,
+		"NextPage":          page + 1,
+		"BrowseResult":      browseResult,
+		"UpdateExts":        updateExts,
+		"InstalledExts":     installedExts,
+		"AvailableExts":     availableExts,
+		"Note":              note,
+		"Problem":           problem,
 	}); err != nil {
 		log.Printf("yata: rendering browse page failed: %v", err)
 	}
@@ -608,22 +802,120 @@ func (s shelf) handleMangaPage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	var (
+		loggedInTrackers []SuwayomiTracker
+		trackResults     []SuwayomiTrackSearchResult
+		trackSearchQ     = strings.TrimSpace(r.URL.Query().Get("trackSearch"))
+		trackSearchID, _ = strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("trackId")))
+		problem          = r.URL.Query().Get("problem")
+	)
+	if allTrackers, err := suw.listTrackers(r.Context()); err == nil {
+		nameByID := make(map[int]string, len(allTrackers))
+		for _, t := range allTrackers {
+			nameByID[t.ID] = t.Name
+			if t.IsLoggedIn {
+				loggedInTrackers = append(loggedInTrackers, t)
+			}
+		}
+		for i := range detail.TrackRecords {
+			if name := nameByID[detail.TrackRecords[i].TrackerID]; name != "" {
+				detail.TrackRecords[i].TrackerName = name
+			} else {
+				detail.TrackRecords[i].TrackerName = fmt.Sprintf("Tracker #%d", detail.TrackRecords[i].TrackerID)
+			}
+		}
+	}
+	if trackSearchID == 0 && len(loggedInTrackers) > 0 {
+		trackSearchID = loggedInTrackers[0].ID
+	}
+	if trackSearchQ != "" && trackSearchID > 0 {
+		res, serr := suw.searchTracker(r.Context(), trackSearchID, trackSearchQ)
+		if serr != nil {
+			if problem == "" {
+				problem = "Tracker search failed: " + serr.Error()
+			}
+		} else {
+			trackResults = res
+		}
+	}
+
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := mangaTmpl.Execute(w, map[string]any{
-		"Nonce":            nonce,
-		"Nav":              nav,
-		"Manga":            detail,
-		"Chapters":         chapters,
-		"CategoryChoices":  catChoices,
-		"ReadCount":        readCount,
-		"DlCount":          dlCount,
-		"TotalCount":       len(chapters),
-		"Note":             r.URL.Query().Get("note"),
-		"Problem":          r.URL.Query().Get("problem"),
+		"Nonce":                nonce,
+		"Nav":                  nav,
+		"Manga":                detail,
+		"Chapters":             chapters,
+		"CategoryChoices":      catChoices,
+		"TrackRecords":         detail.TrackRecords,
+		"LoggedInTrackers":     loggedInTrackers,
+		"TrackSearchResults":   trackResults,
+		"TrackSearchQuery":     trackSearchQ,
+		"TrackSearchTrackerID": trackSearchID,
+		"HasImageTranslator":   s.imageTranslator() != nil,
+		"ReadCount":            readCount,
+		"DlCount":              dlCount,
+		"TotalCount":           len(chapters),
+		"Note":                 r.URL.Query().Get("note"),
+		"Problem":              problem,
 	}); err != nil {
 		log.Printf("yata: rendering manga page failed: %v", err)
+	}
+}
+
+func (s shelf) handleMangaTrackAction(w http.ResponseWriter, r *http.Request) {
+	mangaID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || mangaID <= 0 {
+		http.Error(w, "invalid manga id", http.StatusBadRequest)
+		return
+	}
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Error(w, "suwayomi not configured", http.StatusBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.PostFormValue("action"))
+	switch action {
+	case "search":
+		trackerID, _ := strconv.Atoi(strings.TrimSpace(r.PostFormValue("trackerId")))
+		query := strings.TrimSpace(r.PostFormValue("query"))
+		if trackerID <= 0 || query == "" {
+			http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=Select+a+tracker+and+enter+a+search+query.#trackers", mangaID), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?trackId=%d&trackSearch=%s#trackers", mangaID, trackerID, url.QueryEscape(query)), http.StatusSeeOther)
+		return
+
+	case "bind":
+		trackerID, err1 := strconv.Atoi(strings.TrimSpace(r.PostFormValue("trackerId")))
+		remoteID, err2 := strconv.ParseInt(strings.TrimSpace(r.PostFormValue("remoteId")), 10, 64)
+		if err1 != nil || err2 != nil || trackerID <= 0 || remoteID <= 0 {
+			http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=Invalid+tracker+binding+parameters.#trackers", mangaID), http.StatusSeeOther)
+			return
+		}
+		if err := suw.bindTrack(r.Context(), mangaID, trackerID, remoteID); err != nil {
+			http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=%s#trackers", mangaID, url.QueryEscape(err.Error())), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?note=Tracker+bound.#trackers", mangaID), http.StatusSeeOther)
+		return
+
+	case "unbind":
+		recordID, perr := strconv.ParseInt(strings.TrimSpace(r.PostFormValue("recordId")), 10, 64)
+		if perr != nil || recordID <= 0 {
+			http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=Invalid+track+record+ID.#trackers", mangaID), http.StatusSeeOther)
+			return
+		}
+		if err := suw.unbindTrack(r.Context(), recordID); err != nil {
+			http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=%s#trackers", mangaID, url.QueryEscape(err.Error())), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?note=Tracker+unbound.#trackers", mangaID), http.StatusSeeOther)
+		return
+
+	default:
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=Unknown+tracker+action.#trackers", mangaID), http.StatusSeeOther)
 	}
 }
 
@@ -950,6 +1242,134 @@ func (s shelf) handleUpdatesPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ---- Global Reading History (B2) --------------------------------------------
+
+type historyItemView struct {
+	Timestamp     int64
+	Source        string // "suwayomi" | "shelf"
+	MangaID       int64
+	MangaTitle    string
+	ThumbnailURL  string
+	ChapterID     int64
+	ChapterName   string
+	ChapterNumber string
+	ReadURL       string
+	Progress      string
+	IsRead        bool
+	When          string
+}
+
+type historyDayGroup struct {
+	Label string
+	Items []historyItemView
+}
+
+func (s shelf) handleHistoryPage(w http.ResponseWriter, r *http.Request) {
+	entries, _ := s.list()
+	nav := s.buildNav(r, "history", len(entries))
+	loc := s.cfg.location()
+	today := dayStart(time.Unix(now(), 0).In(loc))
+
+	var (
+		items   []historyItemView
+		problem = r.URL.Query().Get("problem")
+		note    = r.URL.Query().Get("note")
+	)
+
+	if suw := s.suwayomi(); suw != nil {
+		suwHist, err := suw.listReadHistory(r.Context(), 100)
+		if err != nil {
+			problem = "Could not load Suwayomi reading history: " + err.Error()
+		} else {
+			for _, h := range suwHist {
+				prog := "In progress"
+				if h.IsRead {
+					prog = "Finished"
+				} else if h.LastPageRead > 0 && h.PageCount > 0 {
+					prog = fmt.Sprintf("Page %d / %d", h.LastPageRead+1, h.PageCount)
+				} else if h.LastPageRead > 0 {
+					prog = fmt.Sprintf("Page %d", h.LastPageRead+1)
+				}
+				items = append(items, historyItemView{
+					Timestamp:     h.LastReadAt,
+					Source:        "suwayomi",
+					MangaID:       h.MangaID,
+					MangaTitle:    h.MangaTitle,
+					ThumbnailURL:  h.ThumbnailURL,
+					ChapterID:     h.ID,
+					ChapterName:   h.Name,
+					ChapterNumber: chapterNumber(h.ChapterNumber),
+					ReadURL:       fmt.Sprintf("/read/%d", h.ID),
+					Progress:      prog,
+					IsRead:        h.IsRead,
+					When:          humanTime(h.LastReadAt),
+				})
+			}
+		}
+	}
+
+	for _, ev := range s.history() {
+		ts := ev.At
+		if ts > 1e12 {
+			ts /= 1000
+		}
+		items = append(items, historyItemView{
+			Timestamp:   ts,
+			Source:      "shelf",
+			MangaTitle:  ev.MangaTitle,
+			ChapterID:   ev.ChapterID,
+			ChapterName: ev.ChapterName,
+			ReadURL:     fmt.Sprintf("/read/shelf/%d", ev.ChapterID),
+			Progress:    "KOReader",
+			IsRead:      true,
+			When:        humanTime(ts),
+		})
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].Timestamp > items[j].Timestamp
+	})
+
+	var groups []historyDayGroup
+	idxByLabel := map[string]int{}
+	for _, it := range items {
+		label := "Earlier"
+		if it.Timestamp > 0 {
+			t := time.Unix(it.Timestamp, 0).In(loc)
+			d := daysBetween(dayStart(t), today)
+			switch {
+			case d == 0:
+				label = "Today"
+			case d == 1:
+				label = "Yesterday"
+			default:
+				label = t.Format("Mon, 2 Jan 2006")
+			}
+		}
+		idx, ok := idxByLabel[label]
+		if !ok {
+			idx = len(groups)
+			idxByLabel[label] = idx
+			groups = append(groups, historyDayGroup{Label: label})
+		}
+		groups[idx].Items = append(groups[idx].Items, it)
+	}
+
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := historyTmpl.Execute(w, map[string]any{
+		"Nonce":   nonce,
+		"Nav":     nav,
+		"Groups":  groups,
+		"Total":   len(items),
+		"Note":    note,
+		"Problem": problem,
+	}); err != nil {
+		log.Printf("yata: rendering history page failed: %v", err)
+	}
+}
+
 // ---- Source Migration -------------------------------------------------------
 
 func (s shelf) handleMangaMigratePage(w http.ResponseWriter, r *http.Request) {
@@ -1170,6 +1590,18 @@ func (s shelf) handleDownloadsControl(w http.ResponseWriter, r *http.Request) {
 	case "update-library":
 		err = suw.startLibraryUpdate(r.Context())
 		msg = "Library update started."
+	case "cleanup-read":
+		var deleted int
+		deleted, err = s.cleanupReadDownloads(r.Context())
+		if err == nil {
+			if deleted == 0 {
+				msg = "No read downloads to clean."
+			} else if deleted == 1 {
+				msg = "Cleaned 1 read downloaded chapter."
+			} else {
+				msg = fmt.Sprintf("Cleaned %d read downloaded chapters.", deleted)
+			}
+		}
 	case "dequeue":
 		chID, parseErr := strconv.ParseInt(r.PostFormValue("chapterId"), 10, 64)
 		if parseErr != nil || chID <= 0 {
@@ -1400,7 +1832,7 @@ func (s shelf) handleReadShelfChapter(w http.ResponseWriter, r *http.Request) {
 	s.renderReader(w, readerViewData{
 		MangaTitle:   entry.MangaTitle,
 		ChapterTitle: entry.ChapterName,
-		BackURL:      "/",
+		BackURL:      "/shelf",
 		BackLabel:    "Shelf",
 		PrevURL:      prevURL,
 		NextURL:      nextURL,

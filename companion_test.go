@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -1893,5 +1894,624 @@ func TestSourceMigrationCopiesReadChaptersAndRemovesOld(t *testing.T) {
 		t.Fatalf("expected category 4 copied to migrated manga, got %v", addedCatIDs)
 	}
 }
+
+func TestRootRedirectAndShelfRoute(t *testing.T) {
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	noRedir := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	// Without SuwayomiURL, GET / renders the shelf directly.
+	resp, err := noRedir.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on / without Suwayomi, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `href="/shelf"`) {
+		t.Fatalf("expected navHeader to point KOReader Shelf to /shelf")
+	}
+
+	// With SuwayomiURL configured, GET / redirects 303 to /library, while /shelf renders 200.
+	st := cfg.get()
+	st.SuwayomiURL = "http://127.0.0.1:4567"
+	_ = cfg.save(st)
+
+	resp, err = noRedir.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/library" {
+		t.Fatalf("expected 303 -> /library when SuwayomiURL is set, got %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	resp, err = noRedir.Get(srv.URL + "/shelf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on /shelf, got %d", resp.StatusCode)
+	}
+}
+
+func TestGlobalReadingHistoryPage(t *testing.T) {
+	nowSec := time.Now().Unix()
+	yesterdaySec := nowSec - 24*3600
+
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(body.Query, "aboutServer"):
+			_, _ = w.Write([]byte(`{"data":{"aboutServer":{"version":"v2.0"}}}`))
+		case strings.Contains(body.Query, "ReadHistory"):
+			fmt.Fprintf(w, `{"data":{"chapters":{"nodes":[
+				{"id":1100,"name":"Ch. 1100","chapterNumber":1100,"lastReadAt":"%d","lastPageRead":12,"pageCount":20,"isRead":false,"manga":{"id":10,"title":"One Piece","thumbnailUrl":"/api/v1/manga/10/thumbnail"}},
+				{"id":375,"name":"Ch. 375","chapterNumber":375,"lastReadAt":"%d","lastPageRead":19,"pageCount":20,"isRead":true,"manga":{"id":20,"title":"Berserk","thumbnailUrl":"/api/v1/manga/20/thumbnail"}}
+			]}}}`, nowSec-60, yesterdaySec)
+		default:
+			_, _ = w.Write([]byte(`{"data":{}}`))
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	s.appendHistory(Entry{ChapterID: 555, MangaTitle: "Vagabond", ChapterName: "Ch. 10"}, nowSec-30)
+
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /history status = %d", resp.StatusCode)
+	}
+	html := string(raw)
+	for _, want := range []string{"Today", "Yesterday", "One Piece", "Berserk", "Vagabond", "/read/1100", "/read/375", "/read/shelf/555", "Continue Reading"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("/history missing %q", want)
+		}
+	}
+}
+
+func TestBrowseDynamicSourceFilters(t *testing.T) {
+	var (
+		mu              sync.Mutex
+		capturedFilters []SuwayomiFilterChange
+		capturedType    string
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(body.Query, "aboutServer"):
+			_, _ = w.Write([]byte(`{"data":{"aboutServer":{"version":"v2.0"}}}`))
+		case strings.Contains(body.Query, "ListSources"):
+			_, _ = w.Write([]byte(`{"data":{"sources":{"nodes":[{"id":"100","name":"MangaDex","lang":"en","supportsLatest":true}]}}}`))
+		case strings.Contains(body.Query, "GetSourceFilters"):
+			_, _ = w.Write([]byte(`{"data":{"source":{"id":"100","filters":[
+				{"__typename":"CheckBoxFilter","name":"Completed Only","checkBoxDefault":false},
+				{"__typename":"SelectFilter","name":"Demographic","selectValues":["Any","Shounen","Seinen"],"selectDefault":0},
+				{"__typename":"GroupFilter","name":"Genres","groupFilters":[
+					{"__typename":"TriStateFilter","name":"Action","triStateDefault":"IGNORE"}
+				]}
+			]}}}`))
+		case strings.Contains(body.Query, "FetchSourceManga"):
+			mu.Lock()
+			if tStr, ok := body.Variables["type"].(string); ok {
+				capturedType = tStr
+			}
+			if rawF, ok := body.Variables["filters"]; ok && rawF != nil {
+				b, _ := json.Marshal(rawF)
+				_ = json.Unmarshal(b, &capturedFilters)
+			}
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"data":{"fetchSourceManga":{"hasNextPage":false,"mangas":[{"id":77,"title":"Filtered Manga","thumbnailUrl":"/api/v1/manga/77/thumbnail","inLibrary":false}]}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{}}`))
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// Render filters form
+	resp, err := http.Get(srv.URL + "/browse?tab=sources&source=100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), "Completed Only") || !strings.Contains(string(raw), "Demographic") || !strings.Contains(string(raw), "Apply Filters") {
+		t.Fatalf("expected source filters rendered on /browse")
+	}
+
+	// Submit filters
+	resp, err = http.Get(srv.URL + "/browse?tab=sources&source=100&type=SEARCH&f_applied=1&f_0=1&f_1=2&f_2_0=INCLUDE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), "Filtered Manga") || !strings.Contains(string(raw), "3 active") {
+		t.Fatalf("expected filtered results and 3 active filters")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedType != "SEARCH" {
+		t.Fatalf("expected SEARCH type when filters applied, got %q", capturedType)
+	}
+	if len(capturedFilters) != 3 {
+		t.Fatalf("expected 3 filter changes sent to Suwayomi, got %d: %+v", len(capturedFilters), capturedFilters)
+	}
+}
+
+func TestTrackersSettingsAndMangaBindUnbind(t *testing.T) {
+	var (
+		mu           sync.Mutex
+		boundCalls   int
+		unboundCalls int
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(body.Query, "aboutServer"):
+			_, _ = w.Write([]byte(`{"data":{"aboutServer":{"version":"v2.0"}}}`))
+		case strings.Contains(body.Query, "ListTrackers"):
+			_, _ = w.Write([]byte(`{"data":{"trackers":{"nodes":[
+				{"id":1,"name":"MyAnimeList","icon":"/mal.png","isLoggedIn":false,"authUrl":""},
+				{"id":2,"name":"AniList","icon":"/al.png","isLoggedIn":true,"authUrl":""}
+			]}}}`))
+		case strings.Contains(body.Query, "ListCategories"):
+			_, _ = w.Write([]byte(`{"data":{"categories":{"nodes":[]}}}`))
+		case strings.Contains(body.Query, "GetManga"):
+			_, _ = w.Write([]byte(`{"data":{"manga":{
+				"id":55,"title":"Berserk","inLibrary":true,"sourceId":"10",
+				"source":{"id":"10","name":"MangaDex","lang":"en"},
+				"categories":{"nodes":[]},
+				"chapters":{"nodes":[]},
+				"trackRecords":{"nodes":[{"id":901,"trackerId":2,"remoteId":"30002","title":"Berserk","status":1,"displayScore":"10","score":10,"lastChapterRead":375,"totalChapters":0,"remoteUrl":"https://anilist.co/manga/30002"}]}
+			}}}`))
+		case strings.Contains(body.Query, "SearchTracker"):
+			_, _ = w.Write([]byte(`{"data":{"searchTracker":{"trackSearches":[
+				{"trackerId":2,"remoteId":"30002","title":"Berserk","publishingType":"Manga","publishingStatus":"Releasing","startDate":"1989","totalChapters":0}
+			]}}}`))
+		case strings.Contains(body.Query, "BindTrack"):
+			mu.Lock()
+			boundCalls++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"data":{"bindTrack":{"trackRecord":{"id":902}}}}`))
+		case strings.Contains(body.Query, "UnbindTrack"):
+			mu.Lock()
+			unboundCalls++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"data":{"unbindTrack":{"trackRecord":{"id":901}}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{}}`))
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// Settings shows trackers status
+	resp, err := http.Get(srv.URL + "/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), "AniList") || !strings.Contains(string(raw), "MyAnimeList") {
+		t.Fatalf("/settings missing tracker statuses")
+	}
+
+	// Manga page shows bound record + search results
+	resp, err = http.Get(srv.URL + "/manga/55?trackId=2&trackSearch=Berserk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	html := string(raw)
+	if !strings.Contains(html, "AniList") || !strings.Contains(html, "Unbind") || !strings.Contains(html, "Bind") {
+		t.Fatalf("/manga/55 missing tracker panel controls")
+	}
+
+	noRedir := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	// Bind
+	resp, err = noRedir.PostForm(srv.URL+"/manga/55/track", url.Values{
+		"action": {"bind"}, "trackerId": {"2"}, "remoteId": {"30002"},
+	})
+	if err != nil || resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("bind POST failed: %v %v", err, resp)
+	}
+	resp.Body.Close()
+
+	// Unbind
+	resp, err = noRedir.PostForm(srv.URL+"/manga/55/track", url.Values{
+		"action": {"unbind"}, "recordId": {"901"},
+	})
+	if err != nil || resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("unbind POST failed: %v %v", err, resp)
+	}
+	resp.Body.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if boundCalls != 1 || unboundCalls != 1 {
+		t.Fatalf("expected 1 bind and 1 unbind call, got %d / %d", boundCalls, unboundCalls)
+	}
+}
+
+func makeTestCBZBytes(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestTranslatedCBZBurnIn(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		calls   int
+		failReq bool
+	)
+	mockTrans := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		shouldFail := failReq
+		calls++
+		mu.Unlock()
+		if shouldFail {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		file, _, err := r.FormFile("image")
+		if err != nil {
+			http.Error(w, "missing image", http.StatusBadRequest)
+			return
+		}
+		raw, _ := io.ReadAll(file)
+		file.Close()
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(append([]byte("PNG-TR:"), raw...))
+	}))
+	defer mockTrans.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.ImageTranslatorURL = mockTrans.URL
+	st.ImageTranslatorLang = "PTB"
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+
+	cbzBytes := makeTestCBZBytes(t, map[string][]byte{
+		"01.jpg":        []byte("page-one-raw"),
+		"02.jpg":        []byte("page-two-raw"),
+		"ComicInfo.xml": []byte("<ComicInfo/>"),
+	})
+	if err := os.WriteFile(s.cbz(99), cbzBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.save(Entry{ChapterID: 99, ChapterURL: "/ch/99", MangaTitle: "Test", ChapterName: "Ch 1"})
+
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// 1. Request with ?translated=true builds translated CBZ
+	resp, err := http.Get(srv.URL + "/api/shelf/99/file?translated=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCBZ, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Yata-Translated") != "true" {
+		t.Fatalf("expected translated CBZ 200, got %d header=%q", resp.StatusCode, resp.Header.Get("X-Yata-Translated"))
+	}
+	zr, err := zip.NewReader(bytes.NewReader(gotCBZ), int64(len(gotCBZ)))
+	if err != nil {
+		t.Fatalf("translated CBZ is not valid zip: %v", err)
+	}
+	gotFiles := map[string]string{}
+	for _, f := range zr.File {
+		rc, _ := f.Open()
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		gotFiles[f.Name] = string(b)
+	}
+	if gotFiles["01.png"] != "PNG-TR:page-one-raw" || gotFiles["02.png"] != "PNG-TR:page-two-raw" || gotFiles["ComicInfo.xml"] != "<ComicInfo/>" {
+		t.Fatalf("unexpected translated CBZ contents: %+v", gotFiles)
+	}
+
+	// 2. Second request with BurnInTranslations=true hits cached CBZ (0 new translator calls)
+	st.BurnInTranslations = true
+	_ = cfg.save(st)
+	resp, err = http.Get(srv.URL + "/api/shelf/99/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Yata-Translated") != "true" {
+		t.Fatalf("expected cached translated CBZ on BurnInTranslations=true")
+	}
+	mu.Lock()
+	c := calls
+	mu.Unlock()
+	if c != 2 {
+		t.Fatalf("expected exactly 2 translator calls (1 per page, then CBZ cached), got %d", c)
+	}
+
+	// 3. Failure falls back to original CBZ
+	mu.Lock()
+	failReq = true
+	mu.Unlock()
+	resp, err = http.Get(srv.URL + "/api/shelf/99/file?translated=true&lang=ESP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackBytes, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Yata-Translated") != "" {
+		t.Fatalf("expected fallback to original CBZ, got status=%d header=%q", resp.StatusCode, resp.Header.Get("X-Yata-Translated"))
+	}
+	if !bytes.Equal(fallbackBytes, cbzBytes) {
+		t.Fatalf("fallback bytes did not match original CBZ")
+	}
+}
+
+func TestPreTranslateQueue(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		transCalls int
+	)
+	mockTrans := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		transCalls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("RENDERED-PNG"))
+	}))
+	defer mockTrans.Close()
+
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/manga/") {
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("raw-page-" + r.URL.Path))
+			return
+		}
+		var body struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(body.Query, "aboutServer"):
+			_, _ = w.Write([]byte(`{"data":{"aboutServer":{"version":"v2.0"}}}`))
+		case strings.Contains(body.Query, "FetchChapterPages"):
+			_, _ = w.Write([]byte(`{"data":{"fetchChapterPages":{"pages":["/api/v1/manga/1/chapter/10/page/0","/api/v1/manga/1/chapter/10/page/1"]}}}`))
+		case strings.Contains(body.Query, "GetManga"):
+			_, _ = w.Write([]byte(`{"data":{"manga":{"id":1,"title":"Chainsaw Man","inLibrary":true,"sourceId":"10","source":{"id":"10","name":"MD","lang":"en"},"categories":{"nodes":[]},"chapters":{"nodes":[{"id":10,"name":"Ch 1","chapterNumber":1}]},"trackRecords":{"nodes":[]}}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{}}`))
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	st.ImageTranslatorURL = mockTrans.URL
+	st.ImageTranslatorLang = "PTB"
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// Manga page shows Pre-translate button
+	resp, err := http.Get(srv.URL + "/manga/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), "Pre-translate") {
+		t.Fatalf("/manga/1 missing Pre-translate button when image translator is configured")
+	}
+
+	// Enqueue via POST /translate/queue
+	resp, err = http.Post(srv.URL+"/translate/queue", "application/json", strings.NewReader(`{"source":"suwayomi","chapterId":10,"title":"Chainsaw Man — Ch 1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /translate/queue status = %d", resp.StatusCode)
+	}
+
+	// Wait for background worker to finish
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		qst := s.preTranslateQueue().status()
+		if qst.Completed == 1 && qst.Pending == 0 && qst.Active == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	qst := s.preTranslateQueue().status()
+	if qst.Completed != 1 || qst.Errors != 0 {
+		t.Fatalf("expected 1 completed pre-translate job, got %+v", qst)
+	}
+	mu.Lock()
+	tc := transCalls
+	mu.Unlock()
+	if tc != 2 {
+		t.Fatalf("expected 2 translated pages, got %d", tc)
+	}
+
+	// /translate page shows queue status
+	resp, err = http.Get(srv.URL + "/translate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), "Image pre-translation queue") || !strings.Contains(string(raw), "Chainsaw Man — Ch 1") {
+		t.Fatalf("/translate missing queue status and recent job")
+	}
+}
+
+func TestAutoDeleteReadDownloads(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		deletedIDs []int64
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(body.Query, "aboutServer"):
+			_, _ = w.Write([]byte(`{"data":{"aboutServer":{"version":"v2.0"}}}`))
+		case strings.Contains(body.Query, "DownloadedReadChapters"):
+			_, _ = w.Write([]byte(`{"data":{"chapters":{"nodes":[
+				{"id":101,"mangaId":10,"chapterNumber":1,"sourceOrder":1,"lastReadAt":"1000"},
+				{"id":102,"mangaId":10,"chapterNumber":2,"sourceOrder":2,"lastReadAt":"2000"},
+				{"id":103,"mangaId":10,"chapterNumber":3,"sourceOrder":3,"lastReadAt":"3000"},
+				{"id":104,"mangaId":10,"chapterNumber":4,"sourceOrder":4,"lastReadAt":"4000"},
+				{"id":201,"mangaId":20,"chapterNumber":1,"sourceOrder":1,"lastReadAt":"1000"},
+				{"id":202,"mangaId":20,"chapterNumber":2,"sourceOrder":2,"lastReadAt":"2000"}
+			]}}}`))
+		case strings.Contains(body.Query, "DeleteDownloadedChapters"):
+			mu.Lock()
+			if rawIDs, ok := body.Variables["ids"].([]any); ok {
+				deletedIDs = nil
+				for _, v := range rawIDs {
+					if f, ok := v.(float64); ok {
+						deletedIDs = append(deletedIDs, int64(f))
+					}
+				}
+			}
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"data":{"deleteDownloadedChapters":{"chapters":[]}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{}}`))
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	st.AutoDeleteRead = true
+	st.KeepReadChapters = 2
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	noRedir := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	// 1. Manual trigger via POST /downloads/control action=cleanup-read
+	resp, err := noRedir.PostForm(srv.URL+"/downloads/control", url.Values{"action": {"cleanup-read"}})
+	if err != nil || resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("cleanup-read failed: %v %v", err, resp)
+	}
+	resp.Body.Close()
+
+	mu.Lock()
+	got1 := append([]int64(nil), deletedIDs...)
+	deletedIDs = nil
+	mu.Unlock()
+	if len(got1) != 2 || got1[0] != 101 || got1[1] != 102 {
+		t.Fatalf("expected chapters [101 102] deleted (keeping 2 newest per manga), got %v", got1)
+	}
+
+	// 2. Automatic trigger after POST /api/sync/reconcile when AutoDeleteRead=true
+	resp, err = http.Post(srv.URL+"/api/sync/reconcile", "application/json", strings.NewReader(`{"mangas":[],"categories":[],"extensionRepos":[]}`))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("sync reconcile failed: %v %v", err, resp)
+	}
+	resp.Body.Close()
+
+	mu.Lock()
+	got2 := append([]int64(nil), deletedIDs...)
+	mu.Unlock()
+	if len(got2) != 2 || got2[0] != 101 || got2[1] != 102 {
+		t.Fatalf("expected auto-delete after sync reconcile to delete [101 102], got %v", got2)
+	}
+}
+
 
 

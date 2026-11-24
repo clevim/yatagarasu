@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -615,6 +618,78 @@ func (s shelf) handleTranslateTestForm(w http.ResponseWriter, r *http.Request) {
 	s.renderTranslatePage(w, r, out, "", sample, fromLang, toLang)
 }
 
+func (s shelf) handlePreTranslateEnqueue(w http.ResponseWriter, r *http.Request) {
+	var (
+		source    string
+		chapterID int64
+		title     string
+		redirect  string
+		wantJSON  bool
+	)
+
+	if isForm(r) {
+		source = strings.TrimSpace(r.PostFormValue("source"))
+		chapterID, _ = strconv.ParseInt(strings.TrimSpace(r.PostFormValue("chapterId")), 10, 64)
+		title = strings.TrimSpace(r.PostFormValue("title"))
+		redirect = strings.TrimSpace(r.PostFormValue("redirect"))
+	} else {
+		wantJSON = true
+		var body struct {
+			Source    string `json:"source"`
+			ChapterID int64  `json:"chapterId"`
+			Title     string `json:"title"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&body); err != nil {
+			http.Error(w, "invalid json payload", http.StatusBadRequest)
+			return
+		}
+		source = strings.TrimSpace(body.Source)
+		chapterID = body.ChapterID
+		title = strings.TrimSpace(body.Title)
+	}
+
+	if redirect == "" || !strings.HasPrefix(redirect, "/") || strings.HasPrefix(redirect, "//") || strings.ContainsAny(redirect, "\\\r\n") {
+		redirect = "/translate"
+	}
+	sep := "?"
+	if strings.Contains(redirect, "?") {
+		sep = "&"
+	}
+
+	if s.imageTranslator() == nil {
+		if wantJSON {
+			http.Error(w, "image translator sidecar is not configured", http.StatusServiceUnavailable)
+			return
+		}
+		http.Redirect(w, r, redirect+sep+"problem="+url.QueryEscape("Configure manga-image-translator in Settings first."), http.StatusSeeOther)
+		return
+	}
+	if (source != "suwayomi" && source != "shelf") || chapterID <= 0 {
+		if wantJSON {
+			http.Error(w, "invalid source or chapterId", http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, redirect+sep+"problem="+url.QueryEscape("Invalid chapter for pre-translation."), http.StatusSeeOther)
+		return
+	}
+
+	q := s.preTranslateQueue()
+	queued := q.enqueue(source, chapterID, title)
+	if wantJSON {
+		writeJSON(w, map[string]any{
+			"ok":     true,
+			"queued": queued,
+			"status": q.status(),
+		})
+		return
+	}
+	msg := "Chapter queued for pre-translation."
+	if !queued {
+		msg = "Chapter is already queued for pre-translation."
+	}
+	http.Redirect(w, r, redirect+sep+"note="+url.QueryEscape(msg), http.StatusSeeOther)
+}
+
 func (s shelf) renderTranslatePage(w http.ResponseWriter, r *http.Request, result, problem, sample, fromLang, toLang string) {
 	entries, _ := s.list()
 	cachedLines, chapterFiles, contextFiles := s.translationStats()
@@ -625,26 +700,35 @@ func (s shelf) renderTranslatePage(w http.ResponseWriter, r *http.Request, resul
 	if toLang == "" {
 		toLang = "pt-BR"
 	}
+	it := s.imageTranslator()
+	hasImgTrans := it != nil
+	imgTransLang := ""
+	if it != nil {
+		imgTransLang = it.lang
+	}
 
 	nav := s.buildNav(r, "translate", len(entries))
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := translateTmpl.Execute(w, map[string]any{
-		"Nonce":        nonce,
-		"Nav":          nav,
-		"Provider":     cur.TranslateProvider,
-		"Endpoint":     cur.TranslateEndpoint,
-		"Model":        cur.TranslateModel,
-		"CachedLines":  cachedLines,
-		"ChapterFiles": chapterFiles,
-		"ContextFiles": contextFiles,
-		"Note":         r.URL.Query().Get("note"),
-		"Problem":      problem,
-		"Sample":       sample,
-		"FromLang":     fromLang,
-		"ToLang":       toLang,
-		"Result":       result,
+		"Nonce":               nonce,
+		"Nav":                 nav,
+		"Provider":            cur.TranslateProvider,
+		"Endpoint":            cur.TranslateEndpoint,
+		"Model":               cur.TranslateModel,
+		"CachedLines":         cachedLines,
+		"ChapterFiles":        chapterFiles,
+		"ContextFiles":        contextFiles,
+		"HasImageTranslator":  hasImgTrans,
+		"ImageTranslatorLang": imgTransLang,
+		"Queue":               s.preTranslateQueue().status(),
+		"Note":                r.URL.Query().Get("note"),
+		"Problem":             problem,
+		"Sample":              sample,
+		"FromLang":            fromLang,
+		"ToLang":              toLang,
+		"Result":              result,
 	}); err != nil {
 		log.Printf("yata: rendering translate page failed: %v", err)
 	}

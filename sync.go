@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type SyncCategory struct {
@@ -365,6 +367,11 @@ func (s shelf) handleSyncReconcile(w http.ResponseWriter, r *http.Request) {
 		suw.pushCategoriesAndRepos(r.Context(), resp.Categories, resp.ExtensionRepos)
 		if len(resp.Mangas) > 0 {
 			suw.pushChapterReadStates(r.Context(), resp.Mangas)
+		}
+		if s.cfg.get().AutoDeleteRead {
+			cleanCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			_, _ = s.cleanupReadDownloads(cleanCtx)
+			cancel()
 		}
 	}
 

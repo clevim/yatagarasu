@@ -11,7 +11,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -160,31 +159,18 @@ func (s shelf) handleTranslatePageImage(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s shelf) serveTranslatedPNG(w http.ResponseWriter, r *http.Request, it *imageTranslatorClient, imgBytes []byte, targetLang string) {
-	sum := sha256.Sum256(imgBytes)
-	cachePath := s.renderedPagePath(hex.EncodeToString(sum[:]) + "|" + targetLang)
-	if cached, err := os.ReadFile(cachePath); err == nil && len(cached) > 0 {
-		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Cache-Control", "private, max-age=86400")
-		w.Header().Set("X-Yata-Cache", "hit")
-		w.Write(cached)
-		return
-	}
-
-	pngBytes, err := it.translateImagePNG(r.Context(), imgBytes, targetLang)
+	pngBytes, hit, err := s.translateAndCachePagePNG(r.Context(), it, imgBytes, targetLang)
 	if err != nil {
 		http.Error(w, "image translation failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		tmp := cachePath + ".tmp"
-		if os.WriteFile(tmp, pngBytes, 0o644) == nil {
-			_ = os.Rename(tmp, cachePath)
-		}
-	}
-
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
-	w.Header().Set("X-Yata-Cache", "miss")
+	if hit {
+		w.Header().Set("X-Yata-Cache", "hit")
+	} else {
+		w.Header().Set("X-Yata-Cache", "miss")
+	}
 	w.Write(pngBytes)
 }
 
