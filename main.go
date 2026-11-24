@@ -355,6 +355,12 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("DELETE /api/backups/{id}", s.handleDeleteBackup)
 
 	mux.HandleFunc("GET /plugin.zip", pluginZipHandler(s.cfg))
+	mux.HandleFunc("GET /library", s.handleLibraryPage)
+	mux.HandleFunc("GET /translate", s.handleTranslatePage)
+	mux.HandleFunc("POST /translate", s.handleTranslateTestForm)
+	mux.HandleFunc("GET /backups", s.handleBackupsPage)
+	mux.HandleFunc("POST /backups/upload", s.handleBackupUploadForm)
+	mux.HandleFunc("POST /backups/{id}/delete", s.handleBackupDeleteForm)
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /{$}", s.handleIndex)

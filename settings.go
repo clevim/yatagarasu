@@ -170,6 +170,12 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.redirectToSettings(w, r, "Shelf emptied.")
 		return
+	case "clear-translation-cache":
+		transCacheMu.Lock()
+		os.Remove(s.transCachePath())
+		transCacheMu.Unlock()
+		s.redirectToSettings(w, r, "Translation cache cleared.")
+		return
 	}
 
 	days, _ := strconv.Atoi(r.PostFormValue("chartDays"))
@@ -200,6 +206,11 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if r.PostForm.Has("translateModel") {
 		next.TranslateModel = strings.TrimSpace(r.PostFormValue("translateModel"))
 	}
+	if r.PostForm.Has("maxBackups") {
+		if mb, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("maxBackups"))); err == nil && mb > 0 {
+			next.MaxBackups = mb
+		}
+	}
 	if err := s.cfg.save(next); err != nil {
 		s.renderSettings(w, r, "Not saved: "+err.Error())
 		return
@@ -229,6 +240,8 @@ var commonZones = []string{
 func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem string) {
 	cur := s.cfg.get()
 	entries, _ := s.list()
+	nav := s.buildNav(r, "settings", len(entries))
+	cachedLines, chapterFiles, _ := s.translationStats()
 
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
@@ -237,21 +250,32 @@ func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem st
 		w.WriteHeader(http.StatusBadRequest)
 	}
 	err := settingsTmpl.Execute(w, map[string]any{
-		"Nonce":      nonce,
-		"HasKey":     s.cfg.apiKey() != "",
-		"Note":       r.URL.Query().Get("note"),
-		"Problem":    problem,
-		"PublicURL":  cur.PublicURL,
-		"APIKey":     cur.APIKey,
-		"Timezone":   cur.Timezone,
-		"ChartDays":  cur.ChartDays,
-		"DayChoices": []int{7, 14, 30},
-		"Zones":      commonZones,
-		"Entries":    len(entries),
-		"Events":     len(s.history()),
-		"DataDir":    s.dir,
-		"Now":        time.Now().In(s.cfg.location()).Format("Mon 2 Jan 2006, 15:04 MST"),
-		"Version":    version,
+		"Nonce":             nonce,
+		"Nav":               nav,
+		"HasKey":            s.cfg.apiKey() != "",
+		"Note":              r.URL.Query().Get("note"),
+		"Problem":           problem,
+		"PublicURL":         cur.PublicURL,
+		"APIKey":            cur.APIKey,
+		"Timezone":          cur.Timezone,
+		"ChartDays":         cur.ChartDays,
+		"SuwayomiURL":       cur.SuwayomiURL,
+		"SuwayomiUser":      cur.SuwayomiUser,
+		"SuwayomiPass":      cur.SuwayomiPass,
+		"TranslateProvider": cur.TranslateProvider,
+		"TranslateEndpoint": cur.TranslateEndpoint,
+		"TranslateAPIKey":   cur.TranslateAPIKey,
+		"TranslateModel":    cur.TranslateModel,
+		"MaxBackups":        cur.MaxBackups,
+		"DayChoices":        []int{7, 14, 30},
+		"Zones":             commonZones,
+		"Entries":           len(entries),
+		"Events":            len(s.history()),
+		"CachedLines":       cachedLines,
+		"ChapterFiles":      chapterFiles,
+		"DataDir":           s.dir,
+		"Now":               time.Now().In(s.cfg.location()).Format("Mon 2 Jan 2006, 15:04 MST"),
+		"Version":           version,
 	})
 	if err != nil {
 		log.Printf("yata: rendering the settings page failed: %v", err)
