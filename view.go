@@ -54,21 +54,21 @@ const baseHead = favicon + `
  .wrap.narrow{max-width:52rem}
 
  /* Shell navigation */
- .topbar{display:flex;flex-wrap:wrap;gap:.85rem 1.25rem;align-items:center;justify-content:space-between;
+ .topbar{display:flex;flex-wrap:wrap;gap:.75rem 1rem;align-items:center;justify-content:space-between;
          padding-bottom:1rem;border-bottom:1px solid var(--line);margin-bottom:1.5rem}
- .brand{display:flex;align-items:baseline;gap:.5rem;text-decoration:none;color:var(--ink)}
- .brand h1{display:flex;align-items:center;gap:.4rem;font-size:1.25rem}
+ .brand{display:flex;align-items:baseline;gap:.45rem;text-decoration:none;color:var(--ink);white-space:nowrap}
+ .brand h1{display:flex;align-items:center;gap:.35rem;font-size:1.2rem}
  .crow{color:var(--accent);font-weight:700}
- .ver{font-size:.7rem;font-weight:600;color:var(--muted);border:1px solid var(--line);
-      border-radius:999px;padding:.05rem .45rem;font-variant-numeric:tabular-nums}
- .nav{display:flex;flex-wrap:wrap;gap:.2rem;align-items:center}
- .nav a{display:inline-flex;align-items:center;gap:.35rem;padding:.4rem .7rem;border-radius:var(--radius);
-        text-decoration:none;color:var(--muted);font-size:.875rem;font-weight:530;
+ .ver{font-size:.68rem;font-weight:600;color:var(--muted);border:1px solid var(--line);
+      border-radius:999px;padding:.05rem .4rem;font-variant-numeric:tabular-nums}
+ .nav{display:flex;flex-wrap:wrap;gap:.15rem;align-items:center}
+ .nav a{display:inline-flex;align-items:center;gap:.3rem;padding:.35rem .55rem;border-radius:var(--radius);
+        text-decoration:none;color:var(--muted);font-size:.835rem;font-weight:530;white-space:nowrap;
         border:1px solid transparent;transition:background 140ms var(--ease),color 140ms var(--ease)}
  .nav a:hover{color:var(--ink);background:var(--surface)}
  .nav a.active{color:var(--ink);background:var(--surface);border-color:var(--line);font-weight:600}
  .nav a.active .pill{background:var(--accent-soft);color:var(--accent)}
- .pill{font-size:.72rem;font-variant-numeric:tabular-nums;padding:.05rem .4rem;border-radius:999px;
+ .pill{font-size:.7rem;font-variant-numeric:tabular-nums;padding:.02rem .36rem;border-radius:999px;
        background:var(--raise);color:var(--muted);font-weight:600}
 
  /* Buttons & forms */
@@ -172,10 +172,12 @@ const navHeader = `
     <span class="ver">v{{.Nav.Version}}</span>
   </a>
   <nav class="nav" aria-label="Main">
-    <a href="/"{{if eq .Nav.Active "shelf"}} class="active"{{end}}>Shelf <span class="pill">{{.Nav.ShelfCount}}</span></a>
-    <a href="/library"{{if eq .Nav.Active "library"}} class="active"{{end}}>Library <span class="pill">{{.Nav.LibraryCount}}</span></a>
-    <a href="/translate"{{if eq .Nav.Active "translate"}} class="active"{{end}}>Translate <span class="pill">{{.Nav.CacheCount}}</span></a>
-    <a href="/backups"{{if eq .Nav.Active "backups"}} class="active"{{end}}>Backups <span class="pill">{{.Nav.BackupsCount}}</span></a>
+    <a href="/"{{if eq .Nav.Active "shelf"}} class="active"{{end}}>Shelf{{if .Nav.ShelfCount}} <span class="pill">{{.Nav.ShelfCount}}</span>{{end}}</a>
+    <a href="/library"{{if eq .Nav.Active "library"}} class="active"{{end}}>Library{{if .Nav.LibraryCount}} <span class="pill">{{.Nav.LibraryCount}}</span>{{end}}</a>
+    <a href="/browse"{{if eq .Nav.Active "browse"}} class="active"{{end}}>Browse</a>
+    <a href="/downloads"{{if eq .Nav.Active "downloads"}} class="active"{{end}}>Downloads</a>
+    <a href="/translate"{{if eq .Nav.Active "translate"}} class="active"{{end}}>Translate</a>
+    <a href="/backups"{{if eq .Nav.Active "backups"}} class="active"{{end}}>Backups</a>
     <a href="/settings"{{if eq .Nav.Active "settings"}} class="active"{{end}}>Settings</a>
   </nav>
 </header>`
@@ -291,6 +293,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
         <td class="size">{{.Size}}</td>
         <td class="when" title="{{.WhenFull}}">{{.When}}</td>
         <td class="state">
+          <a class="btn sm" href="/read/shelf/{{.ID}}">read</a>
           {{if .Read}}<span class="tag">read</span>
           <form class="inline" method="post" action="/api/shelf/{{.ID}}/read">
             <input type="hidden" name="read" value="false">
@@ -658,6 +661,18 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
       <input name="translateApiKey" type="password" value="{{.TranslateAPIKey}}" autocomplete="off"
              placeholder="Leave blank for local Ollama/vLLM">
     </label>
+    <div class="row2" style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--line)">
+      <label class="field"><span>Image Translator sidecar URL (manga-image-translator)</span>
+        <input name="imageTranslatorUrl" value="{{.ImageTranslatorURL}}" placeholder="http://manga-translator:8000"
+               inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <em class="note">Full-page OCR + LaMa inpainting + typesetting via <code>docker compose --profile translator up -d</code>.</em>
+      </label>
+      <label class="field"><span>Default target language</span>
+        <input name="imageTranslatorLang" value="{{.ImageTranslatorLang}}" placeholder="PTB"
+               autocapitalize="characters" autocorrect="off" spellcheck="false">
+        <em class="note">3-letter code used by manga-image-translator (e.g. <code>PTB</code>, <code>ENG</code>, <code>ESP</code>).</em>
+      </label>
+    </div>
   </section>
 
   <section class="panel">
@@ -775,3 +790,665 @@ var gateTmpl = template.Must(template.New("gate").Parse(`<!doctype html>
   </form>
 </main>
 `))
+
+var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yatagarasu — browse</title>` + baseHead + `
+<style>
+ .tabs{display:flex;gap:.35rem;border-bottom:1px solid var(--line);margin-bottom:1.25rem}
+ .tabs a{padding:.55rem .95rem;text-decoration:none;color:var(--muted);font-size:.9rem;font-weight:550;
+         border-bottom:2px solid transparent;margin-bottom:-1px;transition:color 140ms var(--ease),border-color 140ms var(--ease)}
+ .tabs a:hover{color:var(--ink)}
+ .tabs a.active{color:var(--ink);border-bottom-color:var(--accent)}
+ .toolbar{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem}
+ .toolbar-left{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}
+ .seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
+ .seg a{padding:.38rem .7rem;font-size:.825rem;font-weight:530;text-decoration:none;color:var(--muted);border-right:1px solid var(--line)}
+ .seg a:last-child{border-right:0}
+ .seg a:hover{color:var(--ink);background:var(--raise)}
+ .seg a.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+ .search-bar{display:flex;gap:.4rem;align-items:center;flex:1;min-width:13rem;max-width:24rem}
+ .search-bar input,.source-select{padding:.4rem .65rem;font:inherit;font-size:.85rem;color:var(--ink);
+   background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
+ .search-bar input{flex:1;min-width:0}
+ .source-select{max-width:16rem}
+ .manga-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.25rem,1fr));gap:1rem .85rem;margin-bottom:1.25rem}
+ .manga-card{display:flex;flex-direction:column;text-decoration:none;color:var(--ink);group:card}
+ .cover-wrap{position:relative;aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;
+             background:var(--raise);border:1px solid var(--line);margin-bottom:.42rem;
+             transition:transform 150ms var(--ease),border-color 150ms var(--ease)}
+ .manga-card:hover .cover-wrap{transform:translateY(-2px);border-color:var(--accent)}
+ .cover-wrap img{width:100%;height:100%;object-fit:cover;display:block}
+ .cover-badge{position:absolute;top:.4rem;left:.4rem;padding:.12rem .45rem;border-radius:999px;
+              font-size:.68rem;font-weight:620;background:var(--accent-solid);color:var(--on-accent);
+              box-shadow:0 1px 4px oklch(0 0 0 / .28)}
+ .manga-title{font-size:.84rem;font-weight:550;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;
+              -webkit-box-orient:vertical;overflow:hidden}
+ .pager{display:flex;justify-content:space-between;align-items:center;padding-top:.75rem;border-top:1px solid var(--line)}
+ .ext-icon{width:24px;height:24px;border-radius:.3rem;object-fit:cover;vertical-align:middle;margin-right:.45rem;background:var(--raise)}
+ .ext-name{display:inline-flex;align-items:center;font-weight:550}
+</style>
+<body><div class="wrap">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+{{if not .Configured}}
+<section class="empty">
+  <h2>Suwayomi-Server is not connected</h2>
+  <p>Configure your Suwayomi-Server URL in <a href="/settings#suwayomi">Settings</a> to browse sources, manage extensions, and read manga directly from Yatagarasu.</p>
+</section>
+{{else}}
+<div class="tabs">
+  <a href="/browse?tab=sources"{{if eq .Tab "sources"}} class="active"{{end}}>Sources</a>
+  <a href="/browse?tab=extensions"{{if eq .Tab "extensions"}} class="active"{{end}}>Extensions</a>
+</div>
+
+{{if eq .Tab "sources"}}
+  {{if .Sources}}
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <form method="get" action="/browse" class="inline" style="margin:0;display:inline-flex;gap:.4rem;align-items:center">
+        <input type="hidden" name="tab" value="sources">
+        <input type="hidden" name="type" value="{{.BrowseType}}">
+        <select name="source" class="source-select" aria-label="Source">
+          {{range .Sources}}
+          <option value="{{.ID}}"{{if eq .ID $.SourceID}} selected{{end}}>{{.Name}} ({{.Lang}})</option>
+          {{end}}
+        </select>
+        <button class="btn sm" type="submit">Go</button>
+      </form>
+      <div class="seg">
+        <a href="/browse?tab=sources&source={{.SourceID}}&type=POPULAR"{{if eq .BrowseType "POPULAR"}} class="active"{{end}}>Popular</a>
+        {{if and .SelectedSource .SelectedSource.SupportsLatest}}
+        <a href="/browse?tab=sources&source={{.SourceID}}&type=LATEST"{{if eq .BrowseType "LATEST"}} class="active"{{end}}>Latest</a>
+        {{end}}
+      </div>
+    </div>
+    <form method="get" action="/browse" class="search-bar">
+      <input type="hidden" name="tab" value="sources">
+      <input type="hidden" name="source" value="{{.SourceID}}">
+      <input type="hidden" name="type" value="SEARCH">
+      <input name="q" value="{{.Query}}" placeholder="Search {{if .SelectedSource}}{{.SelectedSource.Name}}{{else}}source{{end}}..." aria-label="Search manga">
+      <button class="btn sm primary" type="submit">Search</button>
+    </form>
+  </div>
+
+  {{if and .BrowseResult .BrowseResult.Mangas}}
+  <div class="manga-grid">
+    {{range .BrowseResult.Mangas}}
+    <a class="manga-card" href="/manga/{{.ID}}">
+      <div class="cover-wrap">
+        {{if .ThumbnailURL}}<img src="{{.ThumbnailURL}}" alt="{{.Title}}" loading="lazy">{{end}}
+        {{if .InLibrary}}<span class="cover-badge">In Library</span>{{end}}
+      </div>
+      <span class="manga-title">{{.Title}}</span>
+    </a>
+    {{end}}
+  </div>
+  <div class="pager">
+    {{if gt .Page 1}}
+    <a class="btn sm" href="/browse?tab=sources&source={{.SourceID}}&type={{.BrowseType}}&q={{.Query}}&page={{.PrevPage}}">← Previous</a>
+    {{else}}<span></span>{{end}}
+    <span class="hint">Page {{.Page}}</span>
+    {{if .BrowseResult.HasNextPage}}
+    <a class="btn sm" href="/browse?tab=sources&source={{.SourceID}}&type={{.BrowseType}}&q={{.Query}}&page={{.NextPage}}">Next →</a>
+    {{else}}<span></span>{{end}}
+  </div>
+  {{else}}
+  <section class="empty">
+    <h2>No results</h2>
+    <p>This source returned no titles for the current view. Try switching to Popular, Latest, or a different search query.</p>
+  </section>
+  {{end}}
+  {{else}}
+  <section class="empty">
+    <h2>No sources installed yet</h2>
+    <p>Install an extension in the <a href="/browse?tab=extensions">Extensions</a> tab to start browsing manga.</p>
+  </section>
+  {{end}}
+{{else}}
+  <div class="toolbar">
+    <form method="get" action="/browse" class="search-bar">
+      <input type="hidden" name="tab" value="extensions">
+      <input name="eq" value="{{.ExtQuery}}" placeholder="Filter extensions by name or language..." aria-label="Filter extensions">
+      <button class="btn sm" type="submit">Filter</button>
+    </form>
+    <form method="post" action="/browse/extensions">
+      <input type="hidden" name="action" value="refresh">
+      <button class="btn sm" type="submit">Refresh extension repos</button>
+    </form>
+  </div>
+
+  <section class="card-table">
+    <header>
+      <h2>Installed extensions</h2>
+      <p>{{len .InstalledExts}} installed</p>
+    </header>
+    {{if .InstalledExts}}
+    <table>
+      <thead><tr><th>Extension</th><th>Lang</th><th class="size">Version</th><th></th></tr></thead>
+      <tbody>
+        {{range .InstalledExts}}
+        <tr>
+          <td>
+            <span class="ext-name">
+              {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{end}}
+              {{.Name}}
+            </span>
+            {{if .IsNsfw}} <span class="tag muted">18+</span>{{end}}
+            {{if .IsObsolete}} <span class="tag muted">obsolete</span>{{end}}
+          </td>
+          <td><span class="tag muted">{{.Lang}}</span></td>
+          <td class="size">{{.VersionName}}</td>
+          <td class="state">
+            {{if .HasUpdate}}
+            <form class="inline" method="post" action="/browse/extensions">
+              <input type="hidden" name="action" value="update">
+              <input type="hidden" name="pkgName" value="{{.PkgName}}">
+              <button class="btn sm primary" type="submit">Update</button>
+            </form>
+            {{end}}
+            <form class="inline" method="post" action="/browse/extensions" data-confirm="Uninstall {{.Name}}?">
+              <input type="hidden" name="action" value="uninstall">
+              <input type="hidden" name="pkgName" value="{{.PkgName}}">
+              <button class="btn ghost" type="submit">Uninstall</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="hint" style="padding:1rem 1.25rem">No installed extensions match the current filter.</p>
+    {{end}}
+  </section>
+
+  <section class="card-table">
+    <header>
+      <h2>Available extensions</h2>
+      <p>{{len .AvailableExts}} available</p>
+    </header>
+    {{if .AvailableExts}}
+    <table>
+      <thead><tr><th>Extension</th><th>Lang</th><th class="size">Version</th><th></th></tr></thead>
+      <tbody>
+        {{range .AvailableExts}}
+        <tr>
+          <td>
+            <span class="ext-name">
+              {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{end}}
+              {{.Name}}
+            </span>
+            {{if .IsNsfw}} <span class="tag muted">18+</span>{{end}}
+          </td>
+          <td><span class="tag muted">{{.Lang}}</span></td>
+          <td class="size">{{.VersionName}}</td>
+          <td class="state">
+            <form class="inline" method="post" action="/browse/extensions">
+              <input type="hidden" name="action" value="install">
+              <input type="hidden" name="pkgName" value="{{.PkgName}}">
+              <button class="btn sm" type="submit">Install</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="hint" style="padding:1rem 1.25rem">No available extensions found. Add extension repos in Suwayomi and click Refresh.</p>
+    {{end}}
+  </section>
+{{end}}
+{{end}}
+
+</div>
+<script nonce="{{.Nonce}}">
+for (const f of document.querySelectorAll("form[data-confirm]"))
+  f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+</script>
+`))
+
+var mangaTmpl = template.Must(template.New("manga").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Manga.Title}} — Yatagarasu</title>` + baseHead + `
+<style>
+ .hero{display:grid;grid-template-columns:1fr;gap:1.25rem;margin-bottom:1.5rem;
+       background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.25rem}
+ @media (min-width:44rem){.hero{grid-template-columns:12rem 1fr;gap:1.5rem}}
+ .hero-cover{aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;background:var(--raise);
+             border:1px solid var(--line);max-width:12rem}
+ .hero-cover img{width:100%;height:100%;object-fit:cover;display:block}
+ .hero-meta h1{font-size:1.5rem;margin-bottom:.35rem}
+ .hero-sub{color:var(--muted);font-size:.875rem;margin:0 0 .65rem}
+ .tags{display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.8rem}
+ .desc{font-size:.9rem;color:var(--ink);line-height:1.55;margin:0 0 1rem;white-space:pre-line}
+ .hero-actions{display:flex;flex-wrap:wrap;gap:.55rem;align-items:center}
+ .ch-link{color:var(--ink);text-decoration:none;font-weight:530}
+ .ch-link:hover{color:var(--accent)}
+ .ch-read .ch-link{color:var(--muted);font-weight:450}
+ .ch-sub{display:block;font-size:.75rem;color:var(--muted)}
+</style>
+<body><div class="wrap">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+<section class="hero">
+  <div class="hero-cover">
+    {{if .Manga.ThumbnailURL}}<img src="{{.Manga.ThumbnailURL}}" alt="{{.Manga.Title}}">{{end}}
+  </div>
+  <div class="hero-meta">
+    <h1>{{.Manga.Title}}</h1>
+    <p class="hero-sub">
+      {{if .Manga.Author}}{{.Manga.Author}}{{end}}{{if and .Manga.Artist (ne .Manga.Artist .Manga.Author)}} · {{.Manga.Artist}}{{end}}
+      {{if .Manga.SourceName}}{{if .Manga.Author}} · {{end}}{{.Manga.SourceName}}{{if .Manga.SourceLang}} ({{.Manga.SourceLang}}){{end}}{{end}}
+    </p>
+    <div class="tags">
+      {{if .Manga.Status}}<span class="tag accent">{{.Manga.Status}}</span>{{end}}
+      {{if .Manga.InLibrary}}<span class="tag">In Library</span>{{end}}
+      {{range .Manga.Categories}}<span class="tag muted">{{.}}</span>{{end}}
+      {{range .Manga.Genres}}<span class="tag muted">{{.}}</span>{{end}}
+    </div>
+    {{if .Manga.Description}}<p class="desc">{{.Manga.Description}}</p>{{end}}
+    <div class="hero-actions">
+      <form method="post" action="/manga/{{.Manga.ID}}/library">
+        {{if .Manga.InLibrary}}
+        <input type="hidden" name="inLibrary" value="false">
+        <button class="btn" type="submit">Remove from Library</button>
+        {{else}}
+        <input type="hidden" name="inLibrary" value="true">
+        <button class="btn primary" type="submit">Add to Library</button>
+        {{end}}
+      </form>
+      <form method="post" action="/manga/{{.Manga.ID}}/refresh">
+        <button class="btn" type="submit">Refresh Chapters</button>
+      </form>
+      {{if .Manga.SourceID}}
+      <a class="btn ghost" href="/browse?tab=sources&source={{.Manga.SourceID}}">← Back to source</a>
+      {{end}}
+    </div>
+  </div>
+</section>
+
+<section class="card-table">
+  <header>
+    <h2>Chapters</h2>
+    <p>{{.TotalCount}} total · {{.ReadCount}} read · {{.DlCount}} downloaded</p>
+  </header>
+  {{if .Chapters}}
+  <table>
+    <thead><tr><th>#</th><th>Chapter</th><th class="size">Pages</th><th>Uploaded</th><th></th></tr></thead>
+    <tbody>
+      {{range .Chapters}}
+      <tr{{if .IsRead}} class="ch-read"{{end}}>
+        <td class="num">{{.Number}}</td>
+        <td>
+          <a class="ch-link" href="/read/{{.ID}}">{{.Name}}</a>
+          {{if .Scanlator}}<span class="ch-sub">{{.Scanlator}}</span>{{end}}
+        </td>
+        <td class="size">{{if gt .PageCount 0}}{{.PageCount}}{{else}}—{{end}}</td>
+        <td class="when">{{.Uploaded}}</td>
+        <td class="state">
+          <a class="btn sm primary" href="/read/{{.ID}}">Read</a>
+          {{if .IsDownloaded}}
+          <span class="tag">saved</span>
+          <form class="inline" method="post" action="/manga/{{$.Manga.ID}}/chapter/{{.ID}}">
+            <input type="hidden" name="action" value="delete-download">
+            <button class="btn ghost" type="submit" title="Delete downloaded files">delete</button>
+          </form>
+          {{else}}
+          <form class="inline" method="post" action="/manga/{{$.Manga.ID}}/chapter/{{.ID}}">
+            <input type="hidden" name="action" value="download">
+            <button class="btn sm" type="submit">Download</button>
+          </form>
+          {{end}}
+          <form class="inline" method="post" action="/manga/{{$.Manga.ID}}/chapter/{{.ID}}">
+            {{if .IsRead}}
+            <input type="hidden" name="action" value="unread">
+            <button class="btn ghost" type="submit">unread</button>
+            {{else}}
+            <input type="hidden" name="action" value="read">
+            <button class="btn ghost" type="submit">mark read</button>
+            {{end}}
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="hint" style="padding:1rem 1.25rem">No chapters fetched yet. Click <strong>Refresh Chapters</strong> above.</p>
+  {{end}}
+</section>
+
+</div>
+`))
+
+var downloadsTmpl = template.Must(template.New("downloads").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yatagarasu — downloads</title>` + baseHead + `
+<style>
+ .dl-controls{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between}
+ .dl-btns{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}
+ .prog{display:flex;align-items:center;gap:.55rem;min-width:8rem}
+ .bar-bg{flex:1;height:5px;background:var(--line);border-radius:999px;overflow:hidden}
+ .bar-fg{height:100%;background:var(--accent-solid);border-radius:999px}
+ .prog span{font-size:.78rem;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+ .mini-cover{width:28px;height:40px;border-radius:.25rem;object-fit:cover;vertical-align:middle;margin-right:.55rem;background:var(--raise)}
+ .dl-manga{display:inline-flex;align-items:center;text-decoration:none;color:var(--ink);font-weight:550}
+ .dl-manga:hover{color:var(--accent)}
+</style>
+<body><div class="wrap">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+{{if not .Configured}}
+<section class="empty">
+  <h2>Suwayomi-Server is not connected</h2>
+  <p>Configure your Suwayomi-Server URL in <a href="/settings#suwayomi">Settings</a> to manage background chapter downloads and library updates.</p>
+</section>
+{{else}}
+<section class="panel">
+  <div class="dl-controls">
+    <div>
+      <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.2rem">
+        <h2>Suwayomi Downloader</h2>
+        {{if eq .State "STARTED"}}<span class="dot ok">{{.State}}</span>{{else}}<span class="dot off">{{.State}}</span>{{end}}
+      </div>
+      <p class="hint">{{len .Items}} {{if eq (len .Items) 1}}chapter{{else}}chapters{{end}} in queue</p>
+    </div>
+    <div class="dl-btns">
+      {{if eq .State "STARTED"}}
+      <form method="post" action="/downloads/control">
+        <input type="hidden" name="action" value="stop">
+        <button class="btn" type="submit">Pause</button>
+      </form>
+      {{else}}
+      <form method="post" action="/downloads/control">
+        <input type="hidden" name="action" value="start">
+        <button class="btn primary" type="submit">Resume</button>
+      </form>
+      {{end}}
+      <form method="post" action="/downloads/control" data-confirm="Clear all items from the download queue?">
+        <input type="hidden" name="action" value="clear">
+        <button class="btn" type="submit">Clear Queue</button>
+      </form>
+      <form method="post" action="/downloads/control">
+        <input type="hidden" name="action" value="update-library">
+        <button class="btn" type="submit">Update Library</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+{{if .Items}}
+<section class="card-table">
+  <header>
+    <h2>Download queue</h2>
+    <p>{{len .Items}} queued</p>
+  </header>
+  <table>
+    <thead><tr><th>Manga</th><th>Chapter</th><th>State</th><th>Progress</th><th></th></tr></thead>
+    <tbody>
+      {{range .Items}}
+      <tr>
+        <td>
+          <a class="dl-manga" href="/manga/{{.MangaID}}">
+            {{if .ThumbnailURL}}<img class="mini-cover" src="{{.ThumbnailURL}}" alt="" loading="lazy">{{end}}
+            {{.MangaTitle}}
+          </a>
+        </td>
+        <td>{{.ChapterName}}</td>
+        <td><span class="tag {{if eq .State "DOWNLOADING"}}accent{{else if eq .State "ERROR"}}muted{{else}}muted{{end}}">{{.State}}</span></td>
+        <td>
+          <div class="prog">
+            <div class="bar-bg"><div class="bar-fg" style="width:{{.ProgressPct}}%"></div></div>
+            <span>{{.ProgressPct}}%</span>
+          </div>
+        </td>
+        <td class="state">
+          <form class="inline" method="post" action="/downloads/control">
+            <input type="hidden" name="action" value="dequeue">
+            <input type="hidden" name="chapterId" value="{{.ChapterID}}">
+            <button class="btn ghost" type="submit">remove</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{else}}
+<section class="empty">
+  <h2>Download queue is empty</h2>
+  <p>Queue chapters from any <a href="/browse">Manga details</a> page or click <strong>Update Library</strong> to check for new releases.</p>
+</section>
+{{end}}
+{{end}}
+
+</div>
+<script nonce="{{.Nonce}}">
+for (const f of document.querySelectorAll("form[data-confirm]"))
+  f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+</script>
+`))
+
+var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.ChapterTitle}} · {{.MangaTitle}} — Yatagarasu</title>` + favicon + `
+<style>
+ :root{
+   --bg:oklch(0.115 0.008 50); --bar:oklch(0.165 0.012 50 / .94); --line:oklch(0.28 0.014 50);
+   --ink:oklch(0.93 0.008 60); --muted:oklch(0.68 0.012 60);
+   --accent:oklch(0.76 0.145 52); --accent-soft:oklch(0.28 0.055 48);
+   --ok:oklch(0.78 0.11 160); --ok-bg:oklch(0.26 0.05 160);
+   --radius:.45rem;
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+   font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh}
+ .rbar{
+   position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:.5rem .75rem;
+   align-items:center;justify-content:space-between;padding:.55rem 1rem;
+   background:var(--bar);border-bottom:1px solid var(--line);backdrop-filter:blur(8px);
+   transition:transform 160ms ease,opacity 160ms ease;
+ }
+ body.zen .rbar{transform:translateY(-100%);opacity:0;pointer-events:none}
+ .rbar-left,.rbar-mid,.rbar-right{display:flex;align-items:center;gap:.45rem;min-width:0}
+ .rtitle{min-width:0;max-width:22rem}
+ .rtitle strong{display:block;font-size:.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .rtitle span{display:block;font-size:.75rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .rbtn{
+   display:inline-flex;align-items:center;gap:.3rem;padding:.32rem .6rem;border-radius:var(--radius);
+   border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;font-size:.8rem;
+   font-weight:530;text-decoration:none;cursor:pointer;white-space:nowrap;
+ }
+ .rbtn:hover{border-color:var(--muted);background:oklch(0.22 0.012 50)}
+ .rbtn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+ .rbtn.done{background:var(--ok-bg);border-color:transparent;color:var(--ok)}
+ .rbtn.disabled{opacity:.38;pointer-events:none}
+ .rcounter{font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--muted);padding:0 .35rem;white-space:nowrap}
+ .stage{width:100%;min-height:calc(100vh - 3.2rem);display:flex;flex-direction:column;align-items:center;padding-bottom:3rem}
+ .stage.webtoon img{display:block;width:100%;max-width:56rem;height:auto;margin:0 auto;user-select:none}
+ .stage.single{justify-content:center;padding:.5rem 0 2rem;position:relative}
+ .stage.single img{display:none;max-width:100vw;max-height:calc(100vh - 4rem);width:auto;height:auto;object-fit:contain;margin:0 auto;user-select:none;cursor:pointer}
+ .stage.single img.current{display:block}
+ .rfoot{display:flex;gap:.75rem;justify-content:center;align-items:center;padding:2rem 1rem 3rem}
+ .empty-reader{padding:4rem 1.5rem;text-align:center;color:var(--muted)}
+ .kbd-hint{font-size:.72rem;color:var(--muted);display:none}
+ @media (min-width:54rem){.kbd-hint{display:inline}}
+</style>
+<body>
+<header class="rbar" id="rbar">
+  <div class="rbar-left">
+    <a class="rbtn" href="{{.BackURL}}">← {{.BackLabel}}</a>
+    <div class="rtitle">
+      <strong>{{.ChapterTitle}}</strong>
+      <span>{{.MangaTitle}}</span>
+    </div>
+  </div>
+  <div class="rbar-mid">
+    {{if .PrevURL}}<a class="rbtn" id="prevCh" href="{{.PrevURL}}">← Prev</a>{{else}}<span class="rbtn disabled">← Prev</span>{{end}}
+    <span class="rcounter" id="counter">1 / {{.PageCount}}</span>
+    {{if .NextURL}}<a class="rbtn" id="nextCh" href="{{.NextURL}}">Next →</a>{{else}}<span class="rbtn disabled">Next →</span>{{end}}
+  </div>
+  <div class="rbar-right">
+    <button class="rbtn" type="button" data-mode="webtoon">Webtoon</button>
+    <button class="rbtn" type="button" data-mode="rtl">RTL</button>
+    <button class="rbtn" type="button" data-mode="ltr">LTR</button>
+    <button class="rbtn{{if .IsRead}} done{{end}}" type="button" id="markReadBtn">{{if .IsRead}}Read ✓{{else}}Mark Read{{end}}</button>
+    <span class="kbd-hint" title="Arrow keys / Space to navigate, F to toggle toolbar">F: bar</span>
+  </div>
+</header>
+
+{{if .Pages}}
+<main class="stage webtoon" id="stage" data-mark-url="{{.MarkReadURL}}" data-read="{{if .IsRead}}true{{else}}false{{end}}">
+  {{range $i, $src := .Pages}}
+  <img src="{{$src}}" alt="Page {{$i}}" data-idx="{{$i}}" loading="lazy">
+  {{end}}
+</main>
+<footer class="rfoot">
+  {{if .PrevURL}}<a class="rbtn" href="{{.PrevURL}}">← Previous Chapter</a>{{end}}
+  <a class="rbtn" href="{{.BackURL}}">Back to {{.BackLabel}}</a>
+  {{if .NextURL}}<a class="rbtn" href="{{.NextURL}}">Next Chapter →</a>{{end}}
+</footer>
+{{else}}
+<div class="empty-reader">
+  <p>No pages found for this chapter.</p>
+  <p><a class="rbtn" href="{{.BackURL}}">← Back to {{.BackLabel}}</a></p>
+</div>
+{{end}}
+
+<script nonce="{{.Nonce}}">
+(function(){
+  const stage = document.getElementById("stage");
+  if (!stage) return;
+  const imgs = Array.from(stage.querySelectorAll("img"));
+  const total = imgs.length;
+  const counter = document.getElementById("counter");
+  const markBtn = document.getElementById("markReadBtn");
+  const modeBtns = Array.from(document.querySelectorAll("[data-mode]"));
+  const markURL = stage.dataset.markUrl;
+  let isRead = stage.dataset.read === "true";
+  let autoMarked = isRead;
+  let idx = 0;
+  let mode = localStorage.getItem("yata_reader_mode") || "webtoon";
+  if (!["webtoon", "rtl", "ltr"].includes(mode)) mode = "webtoon";
+
+  function updateCounter() {
+    if (counter) counter.textContent = (idx + 1) + " / " + total;
+  }
+
+  function sendMarkRead(want, pageIdx) {
+    if (!markURL) return;
+    fetch(markURL, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({read: want, lastPageRead: pageIdx})
+    }).then(r => {
+      if (r.ok) {
+        isRead = want;
+        if (want) autoMarked = true;
+        if (markBtn) {
+          markBtn.textContent = isRead ? "Read ✓" : "Mark Read";
+          markBtn.classList.toggle("done", isRead);
+        }
+      }
+    }).catch(() => {});
+  }
+
+  function maybeAutoMark() {
+    if (!autoMarked && total > 0 && idx >= total - 1) {
+      autoMarked = true;
+      sendMarkRead(true, idx);
+    }
+  }
+
+  function showPage(nextIdx) {
+    if (total === 0) return;
+    if (nextIdx < 0) nextIdx = 0;
+    if (nextIdx >= total) nextIdx = total - 1;
+    idx = nextIdx;
+    imgs.forEach((im, i) => im.classList.toggle("current", i === idx));
+    updateCounter();
+    maybeAutoMark();
+    if (mode !== "webtoon") window.scrollTo({top: 0});
+  }
+
+  function setMode(m) {
+    mode = m;
+    localStorage.setItem("yata_reader_mode", mode);
+    stage.classList.toggle("webtoon", mode === "webtoon");
+    stage.classList.toggle("single", mode !== "webtoon");
+    modeBtns.forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+    showPage(idx);
+    if (mode === "webtoon" && imgs[idx]) imgs[idx].scrollIntoView({block: "start"});
+  }
+
+  modeBtns.forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  if (markBtn) markBtn.addEventListener("click", () => sendMarkRead(!isRead, idx));
+
+  // Click navigation in single-page modes
+  stage.addEventListener("click", e => {
+    if (mode === "webtoon") {
+      document.body.classList.toggle("zen");
+      return;
+    }
+    const rect = stage.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    if (x < 0.3) {
+      showPage(mode === "rtl" ? idx + 1 : idx - 1);
+    } else if (x > 0.7) {
+      showPage(mode === "rtl" ? idx - 1 : idx + 1);
+    } else {
+      document.body.classList.toggle("zen");
+    }
+  });
+
+  // Track visible page in webtoon mode
+  if ("IntersectionObserver" in window) {
+    const obs = new IntersectionObserver(entries => {
+      if (mode !== "webtoon") return;
+      for (const en of entries) {
+        if (en.isIntersecting) {
+          const i = parseInt(en.target.dataset.idx, 10);
+          if (!Number.isNaN(i)) {
+            idx = i;
+            updateCounter();
+            maybeAutoMark();
+          }
+        }
+      }
+    }, {threshold: 0.35});
+    imgs.forEach(im => obs.observe(im));
+  }
+
+  document.addEventListener("keydown", e => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      document.body.classList.toggle("zen");
+    } else if (e.key === "ArrowLeft") {
+      if (mode === "rtl") { e.preventDefault(); showPage(idx + 1); }
+      else if (mode === "ltr") { e.preventDefault(); showPage(idx - 1); }
+    } else if (e.key === "ArrowRight") {
+      if (mode === "rtl") { e.preventDefault(); showPage(idx - 1); }
+      else if (mode === "ltr") { e.preventDefault(); showPage(idx + 1); }
+    } else if (e.key === " ") {
+      if (mode !== "webtoon") {
+        e.preventDefault();
+        showPage(idx + 1);
+      }
+    }
+  });
+
+  setMode(mode);
+})();
+</script>
+`))
+

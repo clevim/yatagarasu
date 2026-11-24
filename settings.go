@@ -36,6 +36,10 @@ type settings struct {
 	TranslateAPIKey   string `json:"translateApiKey,omitempty"`
 	TranslateModel    string `json:"translateModel,omitempty"`
 
+	// Companion v2: optional zyddnys/manga-image-translator sidecar (OCR + LaMa inpainting + typesetting).
+	ImageTranslatorURL  string `json:"imageTranslatorUrl,omitempty"`
+	ImageTranslatorLang string `json:"imageTranslatorLang,omitempty"`
+
 	// Companion v2: maximum .tachibk backups retained on disk (0 = default 10).
 	MaxBackups int `json:"maxBackups,omitempty"`
 }
@@ -52,18 +56,20 @@ func loadConfig(dir string) *config {
 	c := &config{
 		path: filepath.Join(dir, "settings.json"),
 		s: settings{
-			PublicURL:         trimSlash(os.Getenv("YATA_PUBLIC_URL")),
-			APIKey:            os.Getenv("YATA_API_KEY"),
-			Timezone:          os.Getenv("TZ"),
-			ChartDays:         14,
-			SuwayomiURL:       trimSlash(os.Getenv("YATA_SUWAYOMI_URL")),
-			SuwayomiUser:      os.Getenv("YATA_SUWAYOMI_USER"),
-			SuwayomiPass:      os.Getenv("YATA_SUWAYOMI_PASS"),
-			TranslateProvider: strings.ToLower(strings.TrimSpace(os.Getenv("YATA_TRANSLATE_PROVIDER"))),
-			TranslateEndpoint: strings.TrimSpace(os.Getenv("YATA_TRANSLATE_ENDPOINT")),
-			TranslateAPIKey:   strings.TrimSpace(os.Getenv("YATA_TRANSLATE_API_KEY")),
-			TranslateModel:    strings.TrimSpace(os.Getenv("YATA_TRANSLATE_MODEL")),
-			MaxBackups:        maxBackups,
+			PublicURL:           trimSlash(os.Getenv("YATA_PUBLIC_URL")),
+			APIKey:              os.Getenv("YATA_API_KEY"),
+			Timezone:            os.Getenv("TZ"),
+			ChartDays:           14,
+			SuwayomiURL:         trimSlash(os.Getenv("YATA_SUWAYOMI_URL")),
+			SuwayomiUser:        os.Getenv("YATA_SUWAYOMI_USER"),
+			SuwayomiPass:        os.Getenv("YATA_SUWAYOMI_PASS"),
+			TranslateProvider:   strings.ToLower(strings.TrimSpace(os.Getenv("YATA_TRANSLATE_PROVIDER"))),
+			TranslateEndpoint:   strings.TrimSpace(os.Getenv("YATA_TRANSLATE_ENDPOINT")),
+			TranslateAPIKey:     strings.TrimSpace(os.Getenv("YATA_TRANSLATE_API_KEY")),
+			TranslateModel:      strings.TrimSpace(os.Getenv("YATA_TRANSLATE_MODEL")),
+			ImageTranslatorURL:  trimSlash(os.Getenv("YATA_IMAGE_TRANSLATOR_URL")),
+			ImageTranslatorLang: strings.TrimSpace(os.Getenv("YATA_IMAGE_TRANSLATOR_LANG")),
+			MaxBackups:          maxBackups,
 		},
 		loc: time.Local,
 	}
@@ -206,6 +212,12 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if r.PostForm.Has("translateModel") {
 		next.TranslateModel = strings.TrimSpace(r.PostFormValue("translateModel"))
 	}
+	if r.PostForm.Has("imageTranslatorUrl") {
+		next.ImageTranslatorURL = trimSlash(r.PostFormValue("imageTranslatorUrl"))
+	}
+	if r.PostForm.Has("imageTranslatorLang") {
+		next.ImageTranslatorLang = strings.TrimSpace(r.PostFormValue("imageTranslatorLang"))
+	}
 	if r.PostForm.Has("maxBackups") {
 		if mb, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("maxBackups"))); err == nil && mb > 0 {
 			next.MaxBackups = mb
@@ -250,23 +262,25 @@ func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem st
 		w.WriteHeader(http.StatusBadRequest)
 	}
 	err := settingsTmpl.Execute(w, map[string]any{
-		"Nonce":             nonce,
-		"Nav":               nav,
-		"HasKey":            s.cfg.apiKey() != "",
-		"Note":              r.URL.Query().Get("note"),
-		"Problem":           problem,
-		"PublicURL":         cur.PublicURL,
-		"APIKey":            cur.APIKey,
-		"Timezone":          cur.Timezone,
-		"ChartDays":         cur.ChartDays,
-		"SuwayomiURL":       cur.SuwayomiURL,
-		"SuwayomiUser":      cur.SuwayomiUser,
-		"SuwayomiPass":      cur.SuwayomiPass,
-		"TranslateProvider": cur.TranslateProvider,
-		"TranslateEndpoint": cur.TranslateEndpoint,
-		"TranslateAPIKey":   cur.TranslateAPIKey,
-		"TranslateModel":    cur.TranslateModel,
-		"MaxBackups":        cur.MaxBackups,
+		"Nonce":               nonce,
+		"Nav":                 nav,
+		"HasKey":              s.cfg.apiKey() != "",
+		"Note":                r.URL.Query().Get("note"),
+		"Problem":             problem,
+		"PublicURL":           cur.PublicURL,
+		"APIKey":              cur.APIKey,
+		"Timezone":            cur.Timezone,
+		"ChartDays":           cur.ChartDays,
+		"SuwayomiURL":         cur.SuwayomiURL,
+		"SuwayomiUser":        cur.SuwayomiUser,
+		"SuwayomiPass":        cur.SuwayomiPass,
+		"TranslateProvider":   cur.TranslateProvider,
+		"TranslateEndpoint":   cur.TranslateEndpoint,
+		"TranslateAPIKey":     cur.TranslateAPIKey,
+		"TranslateModel":      cur.TranslateModel,
+		"ImageTranslatorURL":  cur.ImageTranslatorURL,
+		"ImageTranslatorLang": cur.ImageTranslatorLang,
+		"MaxBackups":          cur.MaxBackups,
 		"DayChoices":        []int{7, 14, 30},
 		"Zones":             commonZones,
 		"Entries":           len(entries),

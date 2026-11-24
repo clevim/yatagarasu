@@ -36,6 +36,10 @@ services:
       # YATA_TRANSLATE_ENDPOINT: "https://openrouter.ai/api/v1/chat/completions"
       # YATA_TRANSLATE_API_KEY: ""
       # YATA_TRANSLATE_MODEL: "google/gemma-4-31b-it:free"
+      # Optional: full-page visual manga translation (OCR + LaMa inpainting + typesetting)
+      # via zyddnys/manga-image-translator (`docker compose --profile translator up -d`).
+      # YATA_IMAGE_TRANSLATOR_URL: "http://manga-translator:8000"
+      # YATA_IMAGE_TRANSLATOR_LANG: "PTB"
     # The image runs as root so it can write to a bind-mounted ./data. Pin it
     # to your own uid if you prefer:
     # user: "1000:1000"
@@ -57,6 +61,30 @@ services:
       TZ: America/Sao_Paulo
       DOWNLOAD_AS_CBZ: "true"
       FLARESOLVERR_URL: "http://flaresolverr:8191"
+
+  # Full-page manga translation sidecar (text detection -> OCR -> translation ->
+  # LaMa inpainting -> typesetting) powered by zyddnys/manga-image-translator.
+  # Kept strictly internal (no published ports); Yatagarasu talks to it over
+  # the Docker bridge at http://manga-translator:8000.
+  # Start with:
+  #   docker compose --profile translator up -d
+  manga-translator:
+    image: zyddnys/manga-image-translator:main
+    container_name: yatagarasu-translator
+    profiles: ["translator"]
+    restart: unless-stopped
+    entrypoint: ["python", "server/main.py"]
+    command:
+      - "--host=0.0.0.0"
+      - "--port=8000"
+      - "--start-instance"
+      - "--models-ttl=300"
+      # Uncomment for NVIDIA GPU acceleration:
+      # - "--use-gpu"
+    ipc: host
+    volumes:
+      - ./translator-models:/app/models
+      - ./translator-results:/app/result
 
   # Cloudflare bypass for Karasu's sources and Suwayomi.
   # Off by default: it carries a headless Chrome, so it is ~1 GB of image and

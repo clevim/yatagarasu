@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -394,3 +396,643 @@ func (c *suwayomiClient) pushChapterReadStates(ctx context.Context, mangas []Syn
 		}
 	}
 }
+
+// ---- Suwayomi-WebUI native API methods --------------------------------------
+
+// suwayomiImageURL rewrites a Suwayomi-relative asset path into a Yatagarasu
+// image proxy URL so browsers never need direct network access or separate auth
+// to Suwayomi.
+func suwayomiImageURL(rawPath string) string {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return ""
+	}
+	return "/api/suwayomi/image?path=" + url.QueryEscape(rawPath)
+}
+
+type SuwayomiSource struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Lang           string `json:"lang"`
+	IconURL        string `json:"iconUrl"`
+	SupportsLatest bool   `json:"supportsLatest"`
+	IsNsfw         bool   `json:"isNsfw"`
+}
+
+func (c *suwayomiClient) listSources(ctx context.Context) ([]SuwayomiSource, error) {
+	var data struct {
+		Sources struct {
+			Nodes []SuwayomiSource `json:"nodes"`
+		} `json:"sources"`
+	}
+	q := `query ListSources {
+		sources {
+			nodes {
+				id
+				name
+				lang
+				iconUrl
+				supportsLatest
+				isNsfw
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	out := data.Sources.Nodes
+	for i := range out {
+		out[i].IconURL = suwayomiImageURL(out[i].IconURL)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Lang != out[j].Lang {
+			return out[i].Lang < out[j].Lang
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out, nil
+}
+
+type SuwayomiMangaCard struct {
+	ID           int64  `json:"id"`
+	Title        string `json:"title"`
+	ThumbnailURL string `json:"thumbnailUrl"`
+	InLibrary    bool   `json:"inLibrary"`
+	SourceID     string `json:"sourceId"`
+}
+
+type SuwayomiBrowseResult struct {
+	HasNextPage bool                `json:"hasNextPage"`
+	Mangas      []SuwayomiMangaCard `json:"mangas"`
+}
+
+func (c *suwayomiClient) browseSource(ctx context.Context, sourceID, browseType, searchQuery string, page int) (*SuwayomiBrowseResult, error) {
+	if page < 1 {
+		page = 1
+	}
+	t := strings.ToUpper(strings.TrimSpace(browseType))
+	switch t {
+	case "POPULAR", "LATEST", "SEARCH":
+	default:
+		t = "POPULAR"
+	}
+	vars := map[string]any{
+		"source": sourceID,
+		"type":   t,
+		"page":   page,
+	}
+	if t == "SEARCH" {
+		vars["query"] = searchQuery
+	}
+	mut := `mutation FetchSourceManga($source: LongString!, $type: FetchSourceMangaType!, $query: String, $page: Int!) {
+		fetchSourceManga(input: { source: $source, type: $type, query: $query, page: $page }) {
+			hasNextPage
+			mangas {
+				id
+				title
+				thumbnailUrl
+				inLibrary
+				sourceId
+			}
+		}
+	}`
+	var data struct {
+		FetchSourceManga SuwayomiBrowseResult `json:"fetchSourceManga"`
+	}
+	if err := c.graphql(ctx, mut, vars, &data); err != nil {
+		return nil, err
+	}
+	res := &data.FetchSourceManga
+	for i := range res.Mangas {
+		res.Mangas[i].ThumbnailURL = suwayomiImageURL(res.Mangas[i].ThumbnailURL)
+	}
+	return res, nil
+}
+
+type SuwayomiExtension struct {
+	PkgName     string `json:"pkgName"`
+	Name        string `json:"name"`
+	Lang        string `json:"lang"`
+	VersionName string `json:"versionName"`
+	VersionCode int    `json:"versionCode"`
+	IconURL     string `json:"iconUrl"`
+	IsInstalled bool   `json:"isInstalled"`
+	HasUpdate   bool   `json:"hasUpdate"`
+	IsObsolete  bool   `json:"isObsolete"`
+	IsNsfw      bool   `json:"isNsfw"`
+}
+
+func (c *suwayomiClient) listExtensions(ctx context.Context) ([]SuwayomiExtension, error) {
+	var data struct {
+		Extensions struct {
+			Nodes []SuwayomiExtension `json:"nodes"`
+		} `json:"extensions"`
+	}
+	q := `query ListExtensions {
+		extensions {
+			nodes {
+				pkgName
+				name
+				lang
+				versionName
+				versionCode
+				iconUrl
+				isInstalled
+				hasUpdate
+				isObsolete
+				isNsfw
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	out := data.Extensions.Nodes
+	for i := range out {
+		out[i].IconURL = suwayomiImageURL(out[i].IconURL)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].HasUpdate != out[j].HasUpdate {
+			return out[i].HasUpdate
+		}
+		if out[i].Lang != out[j].Lang {
+			return out[i].Lang < out[j].Lang
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out, nil
+}
+
+func (c *suwayomiClient) fetchExtensions(ctx context.Context) error {
+	mut := `mutation FetchExtensions {
+		fetchExtensions(input: {}) {
+			extensions { pkgName }
+		}
+	}`
+	return c.graphql(ctx, mut, nil, nil)
+}
+
+func (c *suwayomiClient) updateExtension(ctx context.Context, pkgName string, install, update, uninstall bool) error {
+	mut := `mutation UpdateExtension($pkgName: String!, $install: Boolean, $update: Boolean, $uninstall: Boolean) {
+		updateExtension(input: { id: $pkgName, patch: { install: $install, update: $update, uninstall: $uninstall } }) {
+			extension {
+				pkgName
+				isInstalled
+				hasUpdate
+			}
+		}
+	}`
+	patch := map[string]any{
+		"pkgName": pkgName,
+	}
+	if install {
+		patch["install"] = true
+	}
+	if update {
+		patch["update"] = true
+	}
+	if uninstall {
+		patch["uninstall"] = true
+	}
+	return c.graphql(ctx, mut, patch, nil)
+}
+
+type SuwayomiChapter struct {
+	ID            int64   `json:"id"`
+	Name          string  `json:"name"`
+	ChapterNumber float64 `json:"chapterNumber"`
+	Scanlator     string  `json:"scanlator"`
+	UploadDate    string  `json:"uploadDate"`
+	IsRead        bool    `json:"isRead"`
+	IsBookmarked  bool    `json:"isBookmarked"`
+	IsDownloaded  bool    `json:"isDownloaded"`
+	LastPageRead  int     `json:"lastPageRead"`
+	PageCount     int     `json:"pageCount"`
+	SourceOrder   int     `json:"sourceOrder"`
+}
+
+type SuwayomiMangaDetail struct {
+	ID           int64             `json:"id"`
+	Title        string            `json:"title"`
+	Author       string            `json:"author"`
+	Artist       string            `json:"artist"`
+	Description  string            `json:"description"`
+	Genres       []string          `json:"genre"`
+	Status       string            `json:"status"`
+	ThumbnailURL string            `json:"thumbnailUrl"`
+	InLibrary    bool              `json:"inLibrary"`
+	SourceID     string            `json:"sourceId"`
+	SourceName   string            `json:"sourceName"`
+	SourceLang   string            `json:"sourceLang"`
+	Categories   []string          `json:"categories"`
+	Chapters     []SuwayomiChapter `json:"chapters"`
+}
+
+func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*SuwayomiMangaDetail, error) {
+	var data struct {
+		Manga struct {
+			ID           int64    `json:"id"`
+			Title        string   `json:"title"`
+			Author       string   `json:"author"`
+			Artist       string   `json:"artist"`
+			Description  string   `json:"description"`
+			Genres       []string `json:"genre"`
+			Status       string   `json:"status"`
+			ThumbnailURL string   `json:"thumbnailUrl"`
+			InLibrary    bool     `json:"inLibrary"`
+			SourceID     string   `json:"sourceId"`
+			Source       *struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+				Lang string `json:"lang"`
+			} `json:"source"`
+			Categories struct {
+				Nodes []struct {
+					Name string `json:"name"`
+				} `json:"nodes"`
+			} `json:"categories"`
+			Chapters struct {
+				Nodes []SuwayomiChapter `json:"nodes"`
+			} `json:"chapters"`
+		} `json:"manga"`
+	}
+	q := `query GetManga($id: Int!) {
+		manga(id: $id) {
+			id
+			title
+			author
+			artist
+			description
+			genre
+			status
+			thumbnailUrl
+			inLibrary
+			sourceId
+			source { id name lang }
+			categories { nodes { name } }
+			chapters {
+				nodes {
+					id
+					name
+					chapterNumber
+					scanlator
+					uploadDate
+					isRead
+					isBookmarked
+					isDownloaded
+					lastPageRead
+					pageCount
+					sourceOrder
+				}
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{"id": mangaID}, &data); err != nil {
+		return nil, err
+	}
+	m := data.Manga
+	if m.ID == 0 {
+		return nil, errors.New("manga not found")
+	}
+	detail := &SuwayomiMangaDetail{
+		ID:           m.ID,
+		Title:        m.Title,
+		Author:       m.Author,
+		Artist:       m.Artist,
+		Description:  m.Description,
+		Genres:       m.Genres,
+		Status:       m.Status,
+		ThumbnailURL: suwayomiImageURL(m.ThumbnailURL),
+		InLibrary:    m.InLibrary,
+		SourceID:     m.SourceID,
+		Chapters:     m.Chapters.Nodes,
+	}
+	if m.Source != nil {
+		detail.SourceName = m.Source.Name
+		detail.SourceLang = m.Source.Lang
+	}
+	for _, cat := range m.Categories.Nodes {
+		if !strings.EqualFold(cat.Name, "Default") {
+			detail.Categories = append(detail.Categories, cat.Name)
+		}
+	}
+	// Newest / highest chapter number first on the details page.
+	sort.SliceStable(detail.Chapters, func(i, j int) bool {
+		if detail.Chapters[i].SourceOrder != detail.Chapters[j].SourceOrder {
+			return detail.Chapters[i].SourceOrder > detail.Chapters[j].SourceOrder
+		}
+		return detail.Chapters[i].ChapterNumber > detail.Chapters[j].ChapterNumber
+	})
+	return detail, nil
+}
+
+func (c *suwayomiClient) toggleLibrary(ctx context.Context, mangaID int64, inLibrary bool) error {
+	mut := `mutation UpdateManga($id: Int!, $inLibrary: Boolean!) {
+		updateManga(input: { id: $id, patch: { inLibrary: $inLibrary } }) {
+			manga { id inLibrary }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{
+		"id":        mangaID,
+		"inLibrary": inLibrary,
+	}, nil)
+}
+
+func (c *suwayomiClient) fetchChapters(ctx context.Context, mangaID int64) error {
+	mut := `mutation FetchChapters($mangaId: Int!) {
+		fetchChapters(input: { mangaId: $mangaId }) {
+			chapters { id }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"mangaId": mangaID}, nil)
+}
+
+func (c *suwayomiClient) enqueueDownload(ctx context.Context, chapterID int64) error {
+	mut := `mutation EnqueueDownload($id: Int!) {
+		enqueueChapterDownload(input: { id: $id }) {
+			downloadStatus { state }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"id": chapterID}, nil)
+}
+
+func (c *suwayomiClient) dequeueDownload(ctx context.Context, chapterID int64) error {
+	mut := `mutation DequeueDownload($id: Int!) {
+		dequeueChapterDownload(input: { id: $id }) {
+			downloadStatus { state }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"id": chapterID}, nil)
+}
+
+func (c *suwayomiClient) deleteDownload(ctx context.Context, chapterID int64) error {
+	mut := `mutation DeleteDownload($id: Int!) {
+		deleteDownloadedChapter(input: { id: $id }) {
+			chapters { id isDownloaded }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"id": chapterID}, nil)
+}
+
+type SuwayomiDownloadItem struct {
+	State         string  `json:"state"`
+	Progress      float64 `json:"progress"`
+	Tries         int     `json:"tries"`
+	ChapterID     int64   `json:"chapterId"`
+	ChapterName   string  `json:"chapterName"`
+	ChapterNumber float64 `json:"chapterNumber"`
+	MangaID       int64   `json:"mangaId"`
+	MangaTitle    string  `json:"mangaTitle"`
+	ThumbnailURL  string  `json:"thumbnailUrl"`
+}
+
+type SuwayomiDownloadStatus struct {
+	State string                 `json:"state"`
+	Queue []SuwayomiDownloadItem `json:"queue"`
+}
+
+func (c *suwayomiClient) downloadStatus(ctx context.Context) (*SuwayomiDownloadStatus, error) {
+	var data struct {
+		DownloadStatus struct {
+			State string `json:"state"`
+			Queue []struct {
+				State    string  `json:"state"`
+				Progress float64 `json:"progress"`
+				Tries    int     `json:"tries"`
+				Chapter  struct {
+					ID            int64   `json:"id"`
+					Name          string  `json:"name"`
+					ChapterNumber float64 `json:"chapterNumber"`
+				} `json:"chapter"`
+				Manga struct {
+					ID           int64  `json:"id"`
+					Title        string `json:"title"`
+					ThumbnailURL string `json:"thumbnailUrl"`
+				} `json:"manga"`
+			} `json:"queue"`
+		} `json:"downloadStatus"`
+	}
+	q := `query DownloadStatus {
+		downloadStatus {
+			state
+			queue {
+				state
+				progress
+				tries
+				chapter { id name chapterNumber }
+				manga { id title thumbnailUrl }
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	out := &SuwayomiDownloadStatus{
+		State: data.DownloadStatus.State,
+		Queue: make([]SuwayomiDownloadItem, 0, len(data.DownloadStatus.Queue)),
+	}
+	for _, it := range data.DownloadStatus.Queue {
+		out.Queue = append(out.Queue, SuwayomiDownloadItem{
+			State:         it.State,
+			Progress:      it.Progress,
+			Tries:         it.Tries,
+			ChapterID:     it.Chapter.ID,
+			ChapterName:   it.Chapter.Name,
+			ChapterNumber: it.Chapter.ChapterNumber,
+			MangaID:       it.Manga.ID,
+			MangaTitle:    it.Manga.Title,
+			ThumbnailURL:  suwayomiImageURL(it.Manga.ThumbnailURL),
+		})
+	}
+	return out, nil
+}
+
+func (c *suwayomiClient) controlDownloader(ctx context.Context, action string) error {
+	var mut string
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "start":
+		mut = `mutation StartDownloader { startDownloader(input: {}) { downloadStatus { state } } }`
+	case "stop":
+		mut = `mutation StopDownloader { stopDownloader(input: {}) { downloadStatus { state } } }`
+	case "clear":
+		mut = `mutation ClearDownloader { clearDownloader(input: {}) { downloadStatus { state } } }`
+	default:
+		return fmt.Errorf("unknown downloader action %q", action)
+	}
+	return c.graphql(ctx, mut, nil, nil)
+}
+
+func (c *suwayomiClient) startLibraryUpdate(ctx context.Context) error {
+	mut := `mutation UpdateLibrary {
+		updateLibrary(input: {}) {
+			updateStatus { isRunning }
+		}
+	}`
+	return c.graphql(ctx, mut, nil, nil)
+}
+
+type SuwayomiChapterReaderInfo struct {
+	ID            int64
+	Name          string
+	ChapterNumber float64
+	IsRead        bool
+	LastPageRead  int
+	MangaID       int64
+	MangaTitle    string
+	PrevChapterID int64
+	NextChapterID int64
+}
+
+func (c *suwayomiClient) getChapterInfo(ctx context.Context, chapterID int64) (*SuwayomiChapterReaderInfo, error) {
+	var data struct {
+		Chapter struct {
+			ID            int64   `json:"id"`
+			Name          string  `json:"name"`
+			ChapterNumber float64 `json:"chapterNumber"`
+			IsRead        bool    `json:"isRead"`
+			LastPageRead  int     `json:"lastPageRead"`
+			MangaID       int64   `json:"mangaId"`
+			Manga         *struct {
+				ID       int64  `json:"id"`
+				Title    string `json:"title"`
+				Chapters struct {
+					Nodes []struct {
+						ID            int64   `json:"id"`
+						ChapterNumber float64 `json:"chapterNumber"`
+						SourceOrder   int     `json:"sourceOrder"`
+					} `json:"nodes"`
+				} `json:"chapters"`
+			} `json:"manga"`
+		} `json:"chapter"`
+	}
+	q := `query GetChapter($id: Int!) {
+		chapter(id: $id) {
+			id
+			name
+			chapterNumber
+			isRead
+			lastPageRead
+			mangaId
+			manga {
+				id
+				title
+				chapters {
+					nodes { id chapterNumber sourceOrder }
+				}
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{"id": chapterID}, &data); err != nil {
+		return nil, err
+	}
+	ch := data.Chapter
+	if ch.ID == 0 {
+		return nil, errors.New("chapter not found")
+	}
+	info := &SuwayomiChapterReaderInfo{
+		ID:            ch.ID,
+		Name:          ch.Name,
+		ChapterNumber: ch.ChapterNumber,
+		IsRead:        ch.IsRead,
+		LastPageRead:  ch.LastPageRead,
+		MangaID:       ch.MangaID,
+	}
+	if ch.Manga != nil {
+		info.MangaTitle = ch.Manga.Title
+		if info.MangaID == 0 {
+			info.MangaID = ch.Manga.ID
+		}
+		list := ch.Manga.Chapters.Nodes
+		// Reading order: ascending sourceOrder / chapterNumber
+		sort.SliceStable(list, func(i, j int) bool {
+			if list[i].SourceOrder != list[j].SourceOrder {
+				return list[i].SourceOrder < list[j].SourceOrder
+			}
+			return list[i].ChapterNumber < list[j].ChapterNumber
+		})
+		for i, item := range list {
+			if item.ID == ch.ID {
+				if i > 0 {
+					info.PrevChapterID = list[i-1].ID
+				}
+				if i+1 < len(list) {
+					info.NextChapterID = list[i+1].ID
+				}
+				break
+			}
+		}
+	}
+	return info, nil
+}
+
+func (c *suwayomiClient) getChapterPages(ctx context.Context, chapterID int64) ([]string, error) {
+	mut := `mutation FetchChapterPages($chapterId: Int!) {
+		fetchChapterPages(input: { chapterId: $chapterId }) {
+			pages
+		}
+	}`
+	var data struct {
+		FetchChapterPages struct {
+			Pages []string `json:"pages"`
+		} `json:"fetchChapterPages"`
+	}
+	if err := c.graphql(ctx, mut, map[string]any{"chapterId": chapterID}, &data); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(data.FetchChapterPages.Pages))
+	for _, p := range data.FetchChapterPages.Pages {
+		out = append(out, suwayomiImageURL(p))
+	}
+	return out, nil
+}
+
+func (c *suwayomiClient) markChapterRead(ctx context.Context, chapterID int64, isRead bool, lastPageRead int) error {
+	mut := `mutation MarkChapterRead($id: Int!, $isRead: Boolean!, $lastPageRead: Int) {
+		updateChapter(input: { id: $id, patch: { isRead: $isRead, lastPageRead: $lastPageRead } }) {
+			chapter { id isRead lastPageRead }
+		}
+	}`
+	vars := map[string]any{
+		"id":     chapterID,
+		"isRead": isRead,
+	}
+	if lastPageRead >= 0 {
+		vars["lastPageRead"] = lastPageRead
+	}
+	return c.graphql(ctx, mut, vars, nil)
+}
+
+func (c *suwayomiClient) proxyImage(ctx context.Context, imgPath string, w http.ResponseWriter) error {
+	imgPath = strings.TrimSpace(imgPath)
+	if !strings.HasPrefix(imgPath, "/") || strings.HasPrefix(imgPath, "//") || strings.Contains(imgPath, "..") {
+		return errors.New("invalid suwayomi image path")
+	}
+	target := c.baseURL + imgPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	c.addAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("suwayomi image http %d", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "image/jpeg"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, err = io.Copy(w, resp.Body)
+	return err
+}
+

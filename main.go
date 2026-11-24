@@ -294,13 +294,19 @@ func (s shelf) handleHealth(w http.ResponseWriter, r *http.Request) {
 		suwHealth = suw.checkHealth(r.Context())
 		caps = append(caps, "downloads", "suwayomi")
 	}
+	imgTransHealth := imageTranslatorHealth{Configured: false}
+	if it := s.imageTranslator(); it != nil {
+		imgTransHealth = it.checkHealth(r.Context())
+		caps = append(caps, "image-translate")
+	}
 	writeJSON(w, map[string]any{
-		"name":         "yatagarasu",
-		"version":      version,
-		"entries":      len(entries),
-		"capabilities": caps,
-		"suwayomi":     suwHealth,
-		"translate":    s.translateStatus(),
+		"name":            "yatagarasu",
+		"version":         version,
+		"entries":         len(entries),
+		"capabilities":    caps,
+		"suwayomi":        suwHealth,
+		"translate":       s.translateStatus(),
+		"imageTranslator": imgTransHealth,
 	})
 }
 
@@ -349,6 +355,7 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("GET /api/translations/context", s.handleGetTranslationContext)
 	mux.HandleFunc("PUT /api/translations/context", s.handlePutTranslationContext)
 	mux.HandleFunc("POST /api/translations/translate", s.handleTranslate)
+	mux.HandleFunc("POST /api/translations/page", s.handleTranslatePageImage)
 	mux.HandleFunc("GET /api/backups", s.handleListBackups)
 	mux.HandleFunc("POST /api/backups", s.handleUploadBackup)
 	mux.HandleFunc("GET /api/backups/{id}", s.handleDownloadBackup)
@@ -356,6 +363,19 @@ func router(s shelf) http.Handler {
 
 	mux.HandleFunc("GET /plugin.zip", pluginZipHandler(s.cfg))
 	mux.HandleFunc("GET /library", s.handleLibraryPage)
+	mux.HandleFunc("GET /api/suwayomi/image", s.handleSuwayomiImage)
+	mux.HandleFunc("GET /api/shelf/{chapterId}/page/{index}", s.handleShelfChapterPage)
+	mux.HandleFunc("GET /browse", s.handleBrowsePage)
+	mux.HandleFunc("POST /browse/extensions", s.handleExtensionAction)
+	mux.HandleFunc("GET /manga/{id}", s.handleMangaPage)
+	mux.HandleFunc("POST /manga/{id}/library", s.handleMangaLibraryToggle)
+	mux.HandleFunc("POST /manga/{id}/refresh", s.handleMangaRefreshChapters)
+	mux.HandleFunc("POST /manga/{id}/chapter/{chapterId}", s.handleMangaChapterAction)
+	mux.HandleFunc("GET /read/shelf/{chapterId}", s.handleReadShelfChapter)
+	mux.HandleFunc("GET /read/{chapterId}", s.handleReadSuwayomiChapter)
+	mux.HandleFunc("POST /read/{chapterId}/read", s.handleReadSuwayomiMarkRead)
+	mux.HandleFunc("GET /downloads", s.handleDownloadsPage)
+	mux.HandleFunc("POST /downloads/control", s.handleDownloadsControl)
 	mux.HandleFunc("GET /translate", s.handleTranslatePage)
 	mux.HandleFunc("POST /translate", s.handleTranslateTestForm)
 	mux.HandleFunc("GET /backups", s.handleBackupsPage)
