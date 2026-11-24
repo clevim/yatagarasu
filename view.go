@@ -664,10 +664,10 @@ var translateTmpl = template.Must(template.New("translate").Parse(`<!doctype htm
 <section class="panel" id="queue">
   <div class="panel-head">
     <h2>Image pre-translation queue</h2>
-    {{if .HasImageTranslator}}<span class="dot ok">{{.ImageTranslatorLang}}</span>{{else}}<span class="dot off">sidecar off</span>{{end}}
+    {{if .HasImageTranslator}}<span class="dot ok">{{.ImageTranslatorLang}}</span>{{else}}<span class="dot off">off</span>{{end}}
   </div>
   {{if not .HasImageTranslator}}
-  <p class="hint">Configure the optional <code>manga-image-translator</code> sidecar in <a href="/settings#translate">Settings</a> to pre-translate full manga chapters in the background into the disk cache.</p>
+  <p class="hint">Configure a Gemini or OpenAI-compatible provider in <a href="/settings#translate">Settings</a> to enable built-in full-page visual translation (or point to an optional external <code>manga-image-translator</code> sidecar).</p>
   {{else}}
   <div class="stats four" style="margin-bottom:.85rem">
     <div class="stat"><b>{{.Queue.Pending}}</b><span>pending</span></div>
@@ -908,15 +908,15 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
              placeholder="Leave blank for local Ollama/vLLM">
     </label>
     <div class="row2" style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--line)">
-      <label class="field"><span>Image Translator sidecar URL (manga-image-translator)</span>
-        <input name="imageTranslatorUrl" value="{{.ImageTranslatorURL}}" placeholder="http://manga-translator:8000"
+      <label class="field"><span>External Image Translator URL (optional override)</span>
+        <input name="imageTranslatorUrl" value="{{.ImageTranslatorURL}}" placeholder="Leave empty to use built-in Vision LLM"
                inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
-        <em class="note">Full-page OCR + LaMa inpainting + typesetting via <code>docker compose --profile translator up -d</code>.</em>
+        <em class="note">Leave blank to use the built-in Vision LLM page translator (uses the provider above, zero extra containers). Set a <code>manga-image-translator</code> URL only if you want external GPU LaMa inpainting.</em>
       </label>
       <label class="field"><span>Default target language</span>
         <input name="imageTranslatorLang" value="{{.ImageTranslatorLang}}" placeholder="PTB"
                autocapitalize="characters" autocorrect="off" spellcheck="false">
-        <em class="note">3-letter code used by manga-image-translator (e.g. <code>PTB</code>, <code>ENG</code>, <code>ESP</code>).</em>
+        <em class="note">Target language for full-page translation (e.g. <code>PTB</code>, <code>ENG</code>, <code>ESP</code>).</em>
       </label>
     </div>
     <label class="field" style="margin-top:.65rem;display:flex;flex-direction:column;gap:.3rem">

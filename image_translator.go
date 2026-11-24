@@ -17,39 +17,61 @@ import (
 	"time"
 )
 
-// imageTranslatorClient talks to the optional zyddnys/manga-image-translator
-// sidecar (`docker compose --profile translator up -d`), which performs full
-// server-side text detection -> OCR -> translation -> LaMa inpainting -> typesetting.
+// imageTranslatorClient handles full-page visual manga translation either via
+// the built-in Vision LLM renderer (zero extra containers, using the configured
+// Gemini or OpenAI-compatible provider) or via an optional external
+// zyddnys/manga-image-translator sidecar when ImageTranslatorURL is set.
 type imageTranslatorClient struct {
+	mode    string // "sidecar" or "builtin"
 	baseURL string
 	lang    string
+	cfg     settings
 	http    *http.Client
 }
 
 type imageTranslatorHealth struct {
 	Configured bool   `json:"configured"`
 	Reachable  bool   `json:"reachable"`
+	Mode       string `json:"mode,omitempty"`
 	TargetLang string `json:"targetLang,omitempty"`
 }
 
 func (s shelf) imageTranslator() *imageTranslatorClient {
 	cur := s.cfg.get()
-	if cur.ImageTranslatorURL == "" {
-		return nil
-	}
 	lang := cur.ImageTranslatorLang
 	if lang == "" {
 		lang = "PTB"
 	}
-	return &imageTranslatorClient{
-		baseURL: trimSlash(cur.ImageTranslatorURL),
-		lang:    lang,
-		http:    &http.Client{Timeout: 5 * time.Minute},
+	if cur.ImageTranslatorURL != "" {
+		return &imageTranslatorClient{
+			mode:    "sidecar",
+			baseURL: trimSlash(cur.ImageTranslatorURL),
+			lang:    lang,
+			cfg:     cur,
+			http:    &http.Client{Timeout: 5 * time.Minute},
+		}
 	}
+	if cur.TranslateProvider != "" {
+		return &imageTranslatorClient{
+			mode: "builtin",
+			lang: lang,
+			cfg:  cur,
+			http: &http.Client{Timeout: 2 * time.Minute},
+		}
+	}
+	return nil
 }
 
 func (c *imageTranslatorClient) checkHealth(ctx context.Context) imageTranslatorHealth {
-	h := imageTranslatorHealth{Configured: true, TargetLang: c.lang}
+	if c.mode == "builtin" {
+		return imageTranslatorHealth{
+			Configured: true,
+			Reachable:  true,
+			Mode:       "builtin:" + c.cfg.TranslateProvider,
+			TargetLang: c.lang,
+		}
+	}
+	h := imageTranslatorHealth{Configured: true, Mode: "sidecar", TargetLang: c.lang}
 	ctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/", nil)
@@ -68,6 +90,9 @@ func (c *imageTranslatorClient) checkHealth(ctx context.Context) imageTranslator
 func (c *imageTranslatorClient) translateImagePNG(ctx context.Context, imgBytes []byte, targetLang string) ([]byte, error) {
 	if targetLang == "" {
 		targetLang = c.lang
+	}
+	if c.mode == "builtin" {
+		return translatePageWithVisionLLM(ctx, c.http, c.cfg, imgBytes, targetLang)
 	}
 	cfgJSON, _ := json.Marshal(map[string]any{
 		"detector": map[string]any{
@@ -122,12 +147,13 @@ func (s shelf) renderedPagePath(key string) string {
 }
 
 // handleTranslatePageImage accepts a raw image upload (or multipart `image`)
-// and returns the inpainted + typeset PNG from zyddnys/manga-image-translator,
-// cached on disk by content hash + target language so repeated views are instant.
+// and returns the translated + typeset PNG (using either the built-in Vision LLM
+// engine or an optional external manga-image-translator sidecar), cached on disk
+// by content hash + target language so repeated views are instant.
 func (s shelf) handleTranslatePageImage(w http.ResponseWriter, r *http.Request) {
 	it := s.imageTranslator()
 	if it == nil {
-		http.Error(w, "image translator sidecar is not configured (set YATA_IMAGE_TRANSLATOR_URL)", http.StatusServiceUnavailable)
+		http.Error(w, "page translation is not configured (set a Gemini/OpenAI provider or YATA_IMAGE_TRANSLATOR_URL in Settings)", http.StatusServiceUnavailable)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)

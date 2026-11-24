@@ -16,7 +16,8 @@ ARG WITH_IMAGE_TRANSLATOR=false
 # ---- Stage 1: Cross-compile Yatagarasu natively on the build runner ----------
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY *.go ./
 COPY yata.koplugin ./yata.koplugin
 ARG TARGETOS TARGETARCH
