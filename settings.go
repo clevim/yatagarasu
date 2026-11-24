@@ -23,6 +23,21 @@ type settings struct {
 	APIKey    string `json:"apiKey"`
 	Timezone  string `json:"timezone"`
 	ChartDays int    `json:"chartDays"`
+
+	// Companion v2: optional official Suwayomi-Server bridge.
+	SuwayomiURL  string `json:"suwayomiUrl,omitempty"`
+	SuwayomiUser string `json:"suwayomiUser,omitempty"`
+	SuwayomiPass string `json:"suwayomiPass,omitempty"`
+
+	// Companion v2: optional server-side LLM translation worker.
+	// Provider is "", "openai" (OpenRouter/DeepSeek/Ollama/vLLM), or "gemini".
+	TranslateProvider string `json:"translateProvider,omitempty"`
+	TranslateEndpoint string `json:"translateEndpoint,omitempty"`
+	TranslateAPIKey   string `json:"translateApiKey,omitempty"`
+	TranslateModel    string `json:"translateModel,omitempty"`
+
+	// Companion v2: maximum .tachibk backups retained on disk (0 = default 10).
+	MaxBackups int `json:"maxBackups,omitempty"`
 }
 
 type config struct {
@@ -33,13 +48,22 @@ type config struct {
 }
 
 func loadConfig(dir string) *config {
+	maxBackups, _ := strconv.Atoi(os.Getenv("YATA_MAX_BACKUPS"))
 	c := &config{
 		path: filepath.Join(dir, "settings.json"),
 		s: settings{
-			PublicURL: trimSlash(os.Getenv("YATA_PUBLIC_URL")),
-			APIKey:    os.Getenv("YATA_API_KEY"),
-			Timezone:  os.Getenv("TZ"),
-			ChartDays: 14,
+			PublicURL:         trimSlash(os.Getenv("YATA_PUBLIC_URL")),
+			APIKey:            os.Getenv("YATA_API_KEY"),
+			Timezone:          os.Getenv("TZ"),
+			ChartDays:         14,
+			SuwayomiURL:       trimSlash(os.Getenv("YATA_SUWAYOMI_URL")),
+			SuwayomiUser:      os.Getenv("YATA_SUWAYOMI_USER"),
+			SuwayomiPass:      os.Getenv("YATA_SUWAYOMI_PASS"),
+			TranslateProvider: strings.ToLower(strings.TrimSpace(os.Getenv("YATA_TRANSLATE_PROVIDER"))),
+			TranslateEndpoint: strings.TrimSpace(os.Getenv("YATA_TRANSLATE_ENDPOINT")),
+			TranslateAPIKey:   strings.TrimSpace(os.Getenv("YATA_TRANSLATE_API_KEY")),
+			TranslateModel:    strings.TrimSpace(os.Getenv("YATA_TRANSLATE_MODEL")),
+			MaxBackups:        maxBackups,
 		},
 		loc: time.Local,
 	}
@@ -49,6 +73,9 @@ func loadConfig(dir string) *config {
 		}
 	}
 	c.s.ChartDays = validDays(c.s.ChartDays)
+	if c.s.MaxBackups <= 0 {
+		c.s.MaxBackups = 10
+	}
 	if loc, err := loadLocation(c.s.Timezone); err == nil {
 		c.loc = loc
 	} else {
@@ -146,11 +173,32 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	days, _ := strconv.Atoi(r.PostFormValue("chartDays"))
-	next := settings{
-		PublicURL: trimSlash(r.PostFormValue("publicUrl")),
-		APIKey:    strings.TrimSpace(r.PostFormValue("apiKey")),
-		Timezone:  strings.TrimSpace(r.PostFormValue("timezone")),
-		ChartDays: days,
+	cur := s.cfg.get()
+	next := cur
+	next.PublicURL = trimSlash(r.PostFormValue("publicUrl"))
+	next.APIKey = strings.TrimSpace(r.PostFormValue("apiKey"))
+	next.Timezone = strings.TrimSpace(r.PostFormValue("timezone"))
+	next.ChartDays = days
+	if r.PostForm.Has("suwayomiUrl") {
+		next.SuwayomiURL = trimSlash(r.PostFormValue("suwayomiUrl"))
+	}
+	if r.PostForm.Has("suwayomiUser") {
+		next.SuwayomiUser = r.PostFormValue("suwayomiUser")
+	}
+	if r.PostForm.Has("suwayomiPass") {
+		next.SuwayomiPass = r.PostFormValue("suwayomiPass")
+	}
+	if r.PostForm.Has("translateProvider") {
+		next.TranslateProvider = strings.ToLower(strings.TrimSpace(r.PostFormValue("translateProvider")))
+	}
+	if r.PostForm.Has("translateEndpoint") {
+		next.TranslateEndpoint = strings.TrimSpace(r.PostFormValue("translateEndpoint"))
+	}
+	if r.PostForm.Has("translateApiKey") {
+		next.TranslateAPIKey = strings.TrimSpace(r.PostFormValue("translateApiKey"))
+	}
+	if r.PostForm.Has("translateModel") {
+		next.TranslateModel = strings.TrimSpace(r.PostFormValue("translateModel"))
 	}
 	if err := s.cfg.save(next); err != nil {
 		s.renderSettings(w, r, "Not saved: "+err.Error())

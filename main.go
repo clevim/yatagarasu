@@ -288,10 +288,19 @@ func (s shelf) handleRead(w http.ResponseWriter, r *http.Request) {
 
 func (s shelf) handleHealth(w http.ResponseWriter, r *http.Request) {
 	entries, _ := s.list()
+	caps := []string{"shelf", "sync", "backups", "translate"}
+	suwHealth := suwayomiHealth{Configured: false}
+	if suw := s.suwayomi(); suw != nil {
+		suwHealth = suw.checkHealth(r.Context())
+		caps = append(caps, "downloads", "suwayomi")
+	}
 	writeJSON(w, map[string]any{
-		"name":    "yatagarasu",
-		"version": version,
-		"entries": len(entries),
+		"name":         "yatagarasu",
+		"version":      version,
+		"entries":      len(entries),
+		"capabilities": caps,
+		"suwayomi":     suwHealth,
+		"translate":    s.translateStatus(),
 	})
 }
 
@@ -309,7 +318,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-const version = "1"
+const version = "2"
 
 // maxUpload bounds one chapter. Karasu sends ~60 MB; this leaves room for a
 // pathological volume without leaving the shelf open to being filled.
@@ -330,6 +339,21 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("POST /api/shelf/{chapterId}/read", s.handleRead)
 	// The browser's delete: an HTML form cannot send DELETE.
 	mux.HandleFunc("POST /api/shelf/{chapterId}/delete", s.handleDeleteForm)
+
+	// Companion v2: bidirectional sync, smart CBZ downloads, translation worker, backups.
+	mux.HandleFunc("POST /api/sync/reconcile", s.handleSyncReconcile)
+	mux.HandleFunc("GET /api/chapters/locate", s.handleLocateChapter)
+	mux.HandleFunc("GET /api/chapters/cbz", s.handleChapterCBZ)
+	mux.HandleFunc("GET /api/translations/chapter", s.handleGetChapterTranslation)
+	mux.HandleFunc("PUT /api/translations/chapter", s.handlePutChapterTranslation)
+	mux.HandleFunc("GET /api/translations/context", s.handleGetTranslationContext)
+	mux.HandleFunc("PUT /api/translations/context", s.handlePutTranslationContext)
+	mux.HandleFunc("POST /api/translations/translate", s.handleTranslate)
+	mux.HandleFunc("GET /api/backups", s.handleListBackups)
+	mux.HandleFunc("POST /api/backups", s.handleUploadBackup)
+	mux.HandleFunc("GET /api/backups/{id}", s.handleDownloadBackup)
+	mux.HandleFunc("DELETE /api/backups/{id}", s.handleDeleteBackup)
+
 	mux.HandleFunc("GET /plugin.zip", pluginZipHandler(s.cfg))
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSaveSettings)

@@ -25,15 +25,40 @@ services:
       # YATA_PUBLIC_URL: "https://yata.example.net"
       # Only affects timestamps on the web page; also settable from Settings.
       TZ: America/Sao_Paulo
+      # Optional: connect Yatagarasu to an official Suwayomi-Server instance
+      # (start the bundled one with `docker compose --profile suwayomi up -d`).
+      # YATA_SUWAYOMI_URL: "http://suwayomi:4567"
+      # YATA_SUWAYOMI_USER: ""
+      # YATA_SUWAYOMI_PASS: ""
+      # Optional: server-side manga translation (provider: "openai" or "gemini").
+      # Works with OpenRouter, DeepSeek, Gemini, or local Ollama/vLLM.
+      # YATA_TRANSLATE_PROVIDER: "openai"
+      # YATA_TRANSLATE_ENDPOINT: "https://openrouter.ai/api/v1/chat/completions"
+      # YATA_TRANSLATE_API_KEY: ""
+      # YATA_TRANSLATE_MODEL: "google/gemma-4-31b-it:free"
     # The image runs as root so it can write to a bind-mounted ./data. Pin it
     # to your own uid if you prefer:
     # user: "1000:1000"
 
-  # Cloudflare bypass for Karasu's sources. Nothing in Yatagarasu talks to it —
-  # it is here because it is the same machine, the same compose file, and the
-  # same afternoon of setup. Karasu: Settings → Advanced → FlareSolverr URL,
-  # http://<host>:8191.
-  #
+  # Official Suwayomi-Server (no fork needed): runs Mihon/Tachiyomi extension
+  # APKs 24/7 and downloads chapters as CBZ for Karasu to pull over LAN.
+  # Start with:
+  #   docker compose --profile suwayomi up -d
+  suwayomi:
+    image: ghcr.io/suwayomi/suwayomi-server:stable
+    container_name: yatagarasu-suwayomi
+    profiles: ["suwayomi"]
+    restart: unless-stopped
+    ports:
+      - "4567:4567"
+    volumes:
+      - ./suwayomi-data:/home/suwayomi/.local/share/Tachidesk
+    environment:
+      TZ: America/Sao_Paulo
+      DOWNLOAD_AS_CBZ: "true"
+      FLARESOLVERR_URL: "http://flaresolverr:8191"
+
+  # Cloudflare bypass for Karasu's sources and Suwayomi.
   # Off by default: it carries a headless Chrome, so it is ~1 GB of image and
   # a few hundred MB of RAM against this container's ~15 MB. Start it with
   #   docker compose --profile flaresolverr up -d

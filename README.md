@@ -145,12 +145,20 @@ Those stale entries get pruned and re-uploaded on the next sync.
 ## API
 
 ```
-GET    /api/health                    Karasu — "Test connection"
+GET    /api/health                    Karasu — "Test connection" + v2 capabilities
 GET    /api/shelf                     Karasu + plugin
 POST   /api/shelf                     Karasu — multipart metadata + file, upsert by chapterId
 DELETE /api/shelf/{chapterId}         Karasu — 204 even when absent
 GET    /api/shelf/{chapterId}/file    plugin — CBZ, supports Range
 POST   /api/shelf/{chapterId}/read    plugin — idempotent, {"read":false} undoes it
+POST   /api/sync/reconcile            Karasu — bidirectional library, categories, progress, merged sources & repos
+GET    /api/chapters/locate           Karasu — check if a chapter CBZ exists locally or on Suwayomi
+GET    /api/chapters/cbz              Karasu — stream CBZ over LAN (optional ?acquire=true via Suwayomi)
+POST   /api/translations/translate    Karasu — server-side LLM translation + shared line cache
+GET/PUT /api/translations/chapter     Karasu — shared per-chapter translation JSON
+GET/PUT /api/translations/context     Karasu — shared per-series glossary/notes
+GET/POST /api/backups                 Karasu — list & upload .tachibk backups
+GET/DELETE /api/backups/{id}          Karasu — download or delete a backup
 GET    /plugin.zip                    browser — the plugin, preconfigured
 GET    /settings, POST /settings      browser — the settings page
 POST   /api/shelf/{chapterId}/delete  browser — the remove button; forms cannot send DELETE
@@ -161,9 +169,8 @@ Programs authenticate with `Authorization: Bearer <key>`. Browsers POST the key 
 and carry a session cookie after that — the key is never accepted from a query string, so it stays
 out of browser history and out of every proxy and tunnel log in the path.
 
-The first four are the frozen contract with Karasu, specified in `docs/koreader-sync.md` in the
-[Karasu repo](https://github.com/clevim/Karasu) — that copy is the source of truth, and Karasu will
-not change to accommodate this server.
+The v1 shelf contract is specified in `docs/koreader-sync.md` and the v2 companion extensions in
+`docs/yatagarasu-companion.md` in the [Karasu repo](https://github.com/clevim/Karasu).
 
 ## Storage
 
