@@ -23,6 +23,38 @@ type settings struct {
 	APIKey    string `json:"apiKey"`
 	Timezone  string `json:"timezone"`
 	ChartDays int    `json:"chartDays"`
+
+	// Companion v2: optional official Suwayomi-Server bridge.
+	SuwayomiURL  string `json:"suwayomiUrl,omitempty"`
+	SuwayomiUser string `json:"suwayomiUser,omitempty"`
+	SuwayomiPass string `json:"suwayomiPass,omitempty"`
+
+	// Companion v2: optional server-side LLM translation worker.
+	// Provider is "", "openai" (OpenRouter/DeepSeek/Ollama/vLLM), or "gemini".
+	TranslateProvider string `json:"translateProvider,omitempty"`
+	TranslateEndpoint string `json:"translateEndpoint,omitempty"`
+	TranslateAPIKey   string `json:"translateApiKey,omitempty"`
+	TranslateModel    string `json:"translateModel,omitempty"`
+
+	// Companion v2: optional zyddnys/manga-image-translator sidecar (OCR + LaMa inpainting + typesetting).
+	ImageTranslatorURL  string `json:"imageTranslatorUrl,omitempty"`
+	ImageTranslatorLang string `json:"imageTranslatorLang,omitempty"`
+	BurnInTranslations  bool   `json:"burnInTranslations,omitempty"`
+
+	// Companion v2: auto-delete Suwayomi downloads for read chapters beyond KeepReadChapters per manga.
+	AutoDeleteRead   bool `json:"autoDeleteRead,omitempty"`
+	KeepReadChapters int  `json:"keepReadChapters"`
+
+	// Companion v2: maximum .tachibk backups retained on disk (0 = default 10).
+	MaxBackups int `json:"maxBackups,omitempty"`
+}
+
+func parseBoolEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 type config struct {
@@ -33,13 +65,33 @@ type config struct {
 }
 
 func loadConfig(dir string) *config {
+	maxBackups, _ := strconv.Atoi(os.Getenv("YATA_MAX_BACKUPS"))
+	keepRead := 2
+	if raw := strings.TrimSpace(os.Getenv("YATA_KEEP_READ_CHAPTERS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			keepRead = n
+		}
+	}
 	c := &config{
 		path: filepath.Join(dir, "settings.json"),
 		s: settings{
-			PublicURL: trimSlash(os.Getenv("YATA_PUBLIC_URL")),
-			APIKey:    os.Getenv("YATA_API_KEY"),
-			Timezone:  os.Getenv("TZ"),
-			ChartDays: 14,
+			PublicURL:           trimSlash(os.Getenv("YATA_PUBLIC_URL")),
+			APIKey:              os.Getenv("YATA_API_KEY"),
+			Timezone:            os.Getenv("TZ"),
+			ChartDays:           14,
+			SuwayomiURL:         trimSlash(os.Getenv("YATA_SUWAYOMI_URL")),
+			SuwayomiUser:        os.Getenv("YATA_SUWAYOMI_USER"),
+			SuwayomiPass:        os.Getenv("YATA_SUWAYOMI_PASS"),
+			TranslateProvider:   strings.ToLower(strings.TrimSpace(os.Getenv("YATA_TRANSLATE_PROVIDER"))),
+			TranslateEndpoint:   strings.TrimSpace(os.Getenv("YATA_TRANSLATE_ENDPOINT")),
+			TranslateAPIKey:     strings.TrimSpace(os.Getenv("YATA_TRANSLATE_API_KEY")),
+			TranslateModel:      strings.TrimSpace(os.Getenv("YATA_TRANSLATE_MODEL")),
+			ImageTranslatorURL:  trimSlash(os.Getenv("YATA_IMAGE_TRANSLATOR_URL")),
+			ImageTranslatorLang: strings.TrimSpace(os.Getenv("YATA_IMAGE_TRANSLATOR_LANG")),
+			BurnInTranslations:  parseBoolEnv(os.Getenv("YATA_BURN_IN_TRANSLATIONS")),
+			AutoDeleteRead:      parseBoolEnv(os.Getenv("YATA_AUTO_DELETE_READ")),
+			KeepReadChapters:    keepRead,
+			MaxBackups:          maxBackups,
 		},
 		loc: time.Local,
 	}
@@ -49,6 +101,12 @@ func loadConfig(dir string) *config {
 		}
 	}
 	c.s.ChartDays = validDays(c.s.ChartDays)
+	if c.s.MaxBackups <= 0 {
+		c.s.MaxBackups = 10
+	}
+	if c.s.KeepReadChapters < 0 {
+		c.s.KeepReadChapters = 2
+	}
 	if loc, err := loadLocation(c.s.Timezone); err == nil {
 		c.loc = loc
 	} else {
@@ -143,14 +201,63 @@ func (s shelf) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.redirectToSettings(w, r, "Shelf emptied.")
 		return
+	case "clear-translation-cache":
+		transCacheMu.Lock()
+		os.Remove(s.transCachePath())
+		transCacheMu.Unlock()
+		s.redirectToSettings(w, r, "Translation cache cleared.")
+		return
 	}
 
 	days, _ := strconv.Atoi(r.PostFormValue("chartDays"))
-	next := settings{
-		PublicURL: trimSlash(r.PostFormValue("publicUrl")),
-		APIKey:    strings.TrimSpace(r.PostFormValue("apiKey")),
-		Timezone:  strings.TrimSpace(r.PostFormValue("timezone")),
-		ChartDays: days,
+	cur := s.cfg.get()
+	next := cur
+	next.PublicURL = trimSlash(r.PostFormValue("publicUrl"))
+	next.APIKey = strings.TrimSpace(r.PostFormValue("apiKey"))
+	next.Timezone = strings.TrimSpace(r.PostFormValue("timezone"))
+	next.ChartDays = days
+	if r.PostForm.Has("suwayomiUrl") {
+		next.SuwayomiURL = trimSlash(r.PostFormValue("suwayomiUrl"))
+	}
+	if r.PostForm.Has("suwayomiUser") {
+		next.SuwayomiUser = r.PostFormValue("suwayomiUser")
+	}
+	if r.PostForm.Has("suwayomiPass") {
+		next.SuwayomiPass = r.PostFormValue("suwayomiPass")
+	}
+	if r.PostForm.Has("translateProvider") {
+		next.TranslateProvider = strings.ToLower(strings.TrimSpace(r.PostFormValue("translateProvider")))
+	}
+	if r.PostForm.Has("translateEndpoint") {
+		next.TranslateEndpoint = strings.TrimSpace(r.PostFormValue("translateEndpoint"))
+	}
+	if r.PostForm.Has("translateApiKey") {
+		next.TranslateAPIKey = strings.TrimSpace(r.PostFormValue("translateApiKey"))
+	}
+	if r.PostForm.Has("translateModel") {
+		next.TranslateModel = strings.TrimSpace(r.PostFormValue("translateModel"))
+	}
+	if r.PostForm.Has("imageTranslatorUrl") {
+		next.ImageTranslatorURL = trimSlash(r.PostFormValue("imageTranslatorUrl"))
+	}
+	if r.PostForm.Has("imageTranslatorLang") {
+		next.ImageTranslatorLang = strings.TrimSpace(r.PostFormValue("imageTranslatorLang"))
+	}
+	if r.PostForm.Has("burnInTranslationsPresent") || r.PostForm.Has("burnInTranslations") {
+		next.BurnInTranslations = parseBoolEnv(r.PostFormValue("burnInTranslations"))
+	}
+	if r.PostForm.Has("autoDeleteReadPresent") || r.PostForm.Has("autoDeleteRead") {
+		next.AutoDeleteRead = parseBoolEnv(r.PostFormValue("autoDeleteRead"))
+	}
+	if r.PostForm.Has("keepReadChapters") {
+		if kr, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("keepReadChapters"))); err == nil && kr >= 0 {
+			next.KeepReadChapters = kr
+		}
+	}
+	if r.PostForm.Has("maxBackups") {
+		if mb, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("maxBackups"))); err == nil && mb > 0 {
+			next.MaxBackups = mb
+		}
 	}
 	if err := s.cfg.save(next); err != nil {
 		s.renderSettings(w, r, "Not saved: "+err.Error())
@@ -181,6 +288,15 @@ var commonZones = []string{
 func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem string) {
 	cur := s.cfg.get()
 	entries, _ := s.list()
+	nav := s.buildNav(r, "settings", len(entries))
+	cachedLines, chapterFiles, _ := s.translationStats()
+
+	var trackers []SuwayomiTracker
+	if suw := s.suwayomi(); suw != nil {
+		if list, err := suw.listTrackers(r.Context()); err == nil {
+			trackers = list
+		}
+	}
 
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
@@ -189,21 +305,38 @@ func (s shelf) renderSettings(w http.ResponseWriter, r *http.Request, problem st
 		w.WriteHeader(http.StatusBadRequest)
 	}
 	err := settingsTmpl.Execute(w, map[string]any{
-		"Nonce":      nonce,
-		"HasKey":     s.cfg.apiKey() != "",
-		"Note":       r.URL.Query().Get("note"),
-		"Problem":    problem,
-		"PublicURL":  cur.PublicURL,
-		"APIKey":     cur.APIKey,
-		"Timezone":   cur.Timezone,
-		"ChartDays":  cur.ChartDays,
-		"DayChoices": []int{7, 14, 30},
-		"Zones":      commonZones,
-		"Entries":    len(entries),
-		"Events":     len(s.history()),
-		"DataDir":    s.dir,
-		"Now":        time.Now().In(s.cfg.location()).Format("Mon 2 Jan 2006, 15:04 MST"),
-		"Version":    version,
+		"Nonce":               nonce,
+		"Nav":                 nav,
+		"HasKey":              s.cfg.apiKey() != "",
+		"Note":                r.URL.Query().Get("note"),
+		"Problem":             problem,
+		"PublicURL":           cur.PublicURL,
+		"APIKey":              cur.APIKey,
+		"Timezone":            cur.Timezone,
+		"ChartDays":           cur.ChartDays,
+		"SuwayomiURL":         cur.SuwayomiURL,
+		"SuwayomiUser":        cur.SuwayomiUser,
+		"SuwayomiPass":        cur.SuwayomiPass,
+		"TranslateProvider":   cur.TranslateProvider,
+		"TranslateEndpoint":   cur.TranslateEndpoint,
+		"TranslateAPIKey":     cur.TranslateAPIKey,
+		"TranslateModel":      cur.TranslateModel,
+		"ImageTranslatorURL":  cur.ImageTranslatorURL,
+		"ImageTranslatorLang": cur.ImageTranslatorLang,
+		"BurnInTranslations":  cur.BurnInTranslations,
+		"AutoDeleteRead":      cur.AutoDeleteRead,
+		"KeepReadChapters":    cur.KeepReadChapters,
+		"Trackers":            trackers,
+		"MaxBackups":          cur.MaxBackups,
+		"DayChoices":          []int{7, 14, 30},
+		"Zones":               commonZones,
+		"Entries":             len(entries),
+		"Events":              len(s.history()),
+		"CachedLines":         cachedLines,
+		"ChapterFiles":        chapterFiles,
+		"DataDir":             s.dir,
+		"Now":                 time.Now().In(s.cfg.location()).Format("Mon 2 Jan 2006, 15:04 MST"),
+		"Version":             version,
 	})
 	if err != nil {
 		log.Printf("yata: rendering the settings page failed: %v", err)

@@ -230,8 +230,18 @@ func (s shelf) handleFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad chapterId", http.StatusBadRequest)
 		return
 	}
+	cbzPath := s.cbz(id)
+	if (s.cfg.get().BurnInTranslations || r.URL.Query().Get("translated") == "true") && s.imageTranslator() != nil {
+		lang := strings.TrimSpace(r.URL.Query().Get("lang"))
+		if translatedPath, terr := s.buildTranslatedCBZ(r.Context(), id, cbzPath, lang); terr == nil {
+			cbzPath = translatedPath
+			w.Header().Set("X-Yata-Translated", "true")
+		} else {
+			log.Printf("yata: translated CBZ build failed for chapter %d, falling back to original: %v", id, terr)
+		}
+	}
 	w.Header().Set("Content-Type", "application/vnd.comicbook+zip")
-	http.ServeFile(w, r, s.cbz(id))
+	http.ServeFile(w, r, cbzPath)
 }
 
 // handleRead flips the read flag. Idempotent: the plugin re-reports on every
@@ -288,10 +298,25 @@ func (s shelf) handleRead(w http.ResponseWriter, r *http.Request) {
 
 func (s shelf) handleHealth(w http.ResponseWriter, r *http.Request) {
 	entries, _ := s.list()
+	caps := []string{"shelf", "sync", "backups", "translate"}
+	suwHealth := suwayomiHealth{Configured: false}
+	if suw := s.suwayomi(); suw != nil {
+		suwHealth = suw.checkHealth(r.Context())
+		caps = append(caps, "downloads", "suwayomi")
+	}
+	imgTransHealth := imageTranslatorHealth{Configured: false}
+	if it := s.imageTranslator(); it != nil {
+		imgTransHealth = it.checkHealth(r.Context())
+		caps = append(caps, "image-translate")
+	}
 	writeJSON(w, map[string]any{
-		"name":    "yatagarasu",
-		"version": version,
-		"entries": len(entries),
+		"name":            "yatagarasu",
+		"version":         version,
+		"entries":         len(entries),
+		"capabilities":    caps,
+		"suwayomi":        suwHealth,
+		"translate":       s.translateStatus(),
+		"imageTranslator": imgTransHealth,
 	})
 }
 
@@ -309,7 +334,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-const version = "1"
+const version = "2"
 
 // maxUpload bounds one chapter. Karasu sends ~60 MB; this leaves room for a
 // pathological volume without leaving the shelf open to being filled.
@@ -330,10 +355,59 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("POST /api/shelf/{chapterId}/read", s.handleRead)
 	// The browser's delete: an HTML form cannot send DELETE.
 	mux.HandleFunc("POST /api/shelf/{chapterId}/delete", s.handleDeleteForm)
+
+	// Companion v2: bidirectional sync, smart CBZ downloads, translation worker, backups.
+	mux.HandleFunc("POST /api/sync/reconcile", s.handleSyncReconcile)
+	mux.HandleFunc("GET /api/chapters/locate", s.handleLocateChapter)
+	mux.HandleFunc("GET /api/chapters/cbz", s.handleChapterCBZ)
+	mux.HandleFunc("GET /api/translations/chapter", s.handleGetChapterTranslation)
+	mux.HandleFunc("PUT /api/translations/chapter", s.handlePutChapterTranslation)
+	mux.HandleFunc("GET /api/translations/context", s.handleGetTranslationContext)
+	mux.HandleFunc("PUT /api/translations/context", s.handlePutTranslationContext)
+	mux.HandleFunc("POST /api/translations/translate", s.handleTranslate)
+	mux.HandleFunc("POST /api/translations/page", s.handleTranslatePageImage)
+	mux.HandleFunc("GET /api/translations/proxy-page", s.handleTranslateProxyPage)
+	mux.HandleFunc("GET /api/backups", s.handleListBackups)
+	mux.HandleFunc("POST /api/backups", s.handleUploadBackup)
+	mux.HandleFunc("GET /api/backups/{id}", s.handleDownloadBackup)
+	mux.HandleFunc("DELETE /api/backups/{id}", s.handleDeleteBackup)
+
 	mux.HandleFunc("GET /plugin.zip", pluginZipHandler(s.cfg))
+	mux.HandleFunc("GET /library", s.handleLibraryPage)
+	mux.HandleFunc("GET /categories", s.handleCategoriesPage)
+	mux.HandleFunc("POST /categories", s.handleCategoriesAction)
+	mux.HandleFunc("GET /updates", s.handleUpdatesPage)
+	mux.HandleFunc("GET /history", s.handleHistoryPage)
+	mux.HandleFunc("GET /shelf", s.handleIndex)
+	mux.HandleFunc("GET /api/suwayomi/image", s.handleSuwayomiImage)
+	mux.HandleFunc("GET /api/shelf/{chapterId}/page/{index}", s.handleShelfChapterPage)
+	mux.HandleFunc("GET /browse", s.handleBrowsePage)
+	mux.HandleFunc("POST /browse/extensions", s.handleExtensionAction)
+	mux.HandleFunc("POST /browse/extensions/install-apk", s.handleExtensionInstallAPK)
+	mux.HandleFunc("GET /source/{id}/settings", s.handleSourceSettingsPage)
+	mux.HandleFunc("POST /source/{id}/settings", s.handleSourceSettingsUpdate)
+	mux.HandleFunc("GET /manga/{id}", s.handleMangaPage)
+	mux.HandleFunc("POST /manga/{id}/library", s.handleMangaLibraryToggle)
+	mux.HandleFunc("POST /manga/{id}/categories", s.handleMangaCategoriesUpdate)
+	mux.HandleFunc("POST /manga/{id}/track", s.handleMangaTrackAction)
+	mux.HandleFunc("GET /manga/{id}/migrate", s.handleMangaMigratePage)
+	mux.HandleFunc("POST /manga/{id}/migrate", s.handleMangaMigratePost)
+	mux.HandleFunc("POST /manga/{id}/refresh", s.handleMangaRefreshChapters)
+	mux.HandleFunc("POST /manga/{id}/chapter/{chapterId}", s.handleMangaChapterAction)
+	mux.HandleFunc("GET /read/shelf/{chapterId}", s.handleReadShelfChapter)
+	mux.HandleFunc("GET /read/{chapterId}", s.handleReadSuwayomiChapter)
+	mux.HandleFunc("POST /read/{chapterId}/read", s.handleReadSuwayomiMarkRead)
+	mux.HandleFunc("GET /downloads", s.handleDownloadsPage)
+	mux.HandleFunc("POST /downloads/control", s.handleDownloadsControl)
+	mux.HandleFunc("GET /translate", s.handleTranslatePage)
+	mux.HandleFunc("POST /translate", s.handleTranslateTestForm)
+	mux.HandleFunc("POST /translate/queue", s.handlePreTranslateEnqueue)
+	mux.HandleFunc("GET /backups", s.handleBackupsPage)
+	mux.HandleFunc("POST /backups/upload", s.handleBackupUploadForm)
+	mux.HandleFunc("POST /backups/{id}/delete", s.handleBackupDeleteForm)
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSaveSettings)
-	mux.HandleFunc("GET /{$}", s.handleIndex)
+	mux.HandleFunc("GET /{$}", s.handleRoot)
 
 	// /login is the only route outside the gate — it is how you get through it.
 	top := http.NewServeMux()
@@ -341,6 +415,14 @@ func router(s shelf) http.Handler {
 	top.HandleFunc("POST /logout", g.handleLogout)
 	top.Handle("/", g.wrap(mux))
 	return top
+}
+
+func (s shelf) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.get().SuwayomiURL != "" {
+		http.Redirect(w, r, "/library", http.StatusSeeOther)
+		return
+	}
+	s.handleIndex(w, r)
 }
 
 func env(k, def string) string {

@@ -1,0 +1,33 @@
+services:
+  yatagarasu-allinone:
+    build:
+      context: .
+      dockerfile: Dockerfile.allinone
+      args:
+        # Pin or bump the bundled official Suwayomi-Server release JAR:
+        SUWAYOMI_VERSION: "v2.4.2373"
+        # Set to "true" to also bundle zyddnys/manga-image-translator (larger ML image):
+        WITH_IMAGE_TRANSLATOR: "false"
+    container_name: yatagarasu-allinone
+    restart: unless-stopped
+    ports:
+      # Single unified front door — Suwayomi (127.0.0.1:4567) and optional
+      # manga-image-translator (127.0.0.1:8000) stay strictly internal.
+      - "3080:3080"
+    volumes:
+      - ./data:/data
+    environment:
+      # Blank (or unset) means an open shelf: only do that on a trusted LAN.
+      YATA_API_KEY: "change-me"
+      TZ: America/Sao_Paulo
+      # Set when behind a reverse proxy or Cloudflare Tunnel:
+      # YATA_PUBLIC_URL: "https://yata.example.net"
+      # Optional JVM tuning for bundled Suwayomi-Server:
+      # JAVA_OPTS: "-Xms128m -Xmx512m"
+      # Optional server-side LLM manga translation ("openai" or "gemini"):
+      # YATA_TRANSLATE_PROVIDER: "openai"
+      # YATA_TRANSLATE_ENDPOINT: "https://openrouter.ai/api/v1/chat/completions"
+      # YATA_TRANSLATE_API_KEY: ""
+      # YATA_TRANSLATE_MODEL: "google/gemma-4-31b-it:free"
+      # Optional target language when built with WITH_IMAGE_TRANSLATOR=true:
+      # YATA_IMAGE_TRANSLATOR_LANG: "PTB"

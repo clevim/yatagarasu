@@ -1,0 +1,95 @@
+# All-in-One Yatagarasu image:
+#   - Yatagarasu (Go binary, single unified front door on :3080)
+#   - Official Suwayomi-Server JAR + OpenJDK 21 JRE headless (127.0.0.1:4567)
+#   - Optional zyddnys/manga-image-translator (127.0.0.1:8000) when built with:
+#       docker build -f Dockerfile.allinone --build-arg WITH_IMAGE_TRANSLATOR=true .
+#
+# Everything persists cleanly under /data:
+#   /data/yatagarasu        — shelf CBZs, settings, sync state, backups, caches
+#   /data/suwayomi          — Suwayomi DB, server.conf, extensions, downloads
+#   /data/translator-models — ML weights (only used when WITH_IMAGE_TRANSLATOR=true)
+
+ARG BUILDPLATFORM=linux/amd64
+ARG SUWAYOMI_VERSION=v2.4.2373
+ARG WITH_IMAGE_TRANSLATOR=false
+
+# ---- Stage 1: Cross-compile Yatagarasu natively on the build runner ----------
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-build
+WORKDIR /src
+COPY go.mod ./
+COPY *.go ./
+COPY yata.koplugin ./yata.koplugin
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags "-s -w" -o /yatagarasu .
+
+# ---- Stage 2: Fetch & verify the official Suwayomi-Server release JAR --------
+FROM --platform=$BUILDPLATFORM alpine:3.21 AS suwayomi-fetch
+ARG SUWAYOMI_VERSION
+RUN apk add --no-cache curl ca-certificates
+WORKDIR /dl
+RUN set -eu; \
+    JAR="Suwayomi-Server-${SUWAYOMI_VERSION}.jar"; \
+    BASE="https://github.com/Suwayomi/Suwayomi-Server/releases/download/${SUWAYOMI_VERSION}"; \
+    curl -fsSL -o "${JAR}" "${BASE}/${JAR}"; \
+    if curl -fsSL -o Checksums.sha256 "${BASE}/Checksums.sha256"; then \
+      grep " ${JAR}\$" Checksums.sha256 | sha256sum -c -; \
+    fi; \
+    mv "${JAR}" /Suwayomi-Server.jar
+
+# ---- Stage 3: Unified runtime (OpenJDK 21 JRE headless + optional ML) --------
+FROM ubuntu:24.04 AS runtime
+
+ARG WITH_IMAGE_TRANSLATOR
+ARG SUWAYOMI_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    YATA_DATA=/data/yatagarasu \
+    YATA_ADDR=:3080 \
+    YATA_SUWAYOMI_URL=http://127.0.0.1:4567 \
+    SUWAYOMI_VERSION=${SUWAYOMI_VERSION}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      openjdk-21-jre-headless \
+      tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Optional full-page visual manga translation runtime (OCR + LaMa inpainting + typesetting).
+# Skipped by default so the standard all-in-one image stays compact (~450 MB).
+RUN if [ "${WITH_IMAGE_TRANSLATOR}" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        python3 \
+        python3-venv \
+        python3-pip \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+      && git clone --depth 1 https://github.com/zyddnys/manga-image-translator.git /opt/manga-translator \
+      && python3 -m venv /opt/manga-translator/.venv \
+      && /opt/manga-translator/.venv/bin/pip install --no-cache-dir --upgrade pip \
+      && /opt/manga-translator/.venv/bin/pip install --no-cache-dir -r /opt/manga-translator/requirements.txt \
+      && rm -rf /opt/manga-translator/.git /opt/manga-translator/models /opt/manga-translator/result \
+      && ln -s /data/translator-models /opt/manga-translator/models \
+      && ln -s /data/translator-results /opt/manga-translator/result \
+      && apt-get purge -y --auto-remove git \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+COPY --from=go-build /yatagarasu /usr/local/bin/yatagarasu
+COPY --from=suwayomi-fetch /Suwayomi-Server.jar /opt/suwayomi/Suwayomi-Server.jar
+COPY entrypoint-allinone.sh /usr/local/bin/entrypoint-allinone.sh
+RUN chmod +x /usr/local/bin/yatagarasu /usr/local/bin/entrypoint-allinone.sh
+
+VOLUME ["/data"]
+
+# Yatagarasu is the single unified front door; Suwayomi (127.0.0.1:4567) and
+# manga-image-translator (127.0.0.1:8000) stay strictly on loopback.
+EXPOSE 3080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -sS -o /dev/null http://127.0.0.1:3080/api/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-allinone.sh"]
