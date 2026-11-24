@@ -5,14 +5,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestHealthReportsCompanionV2Capabilities(t *testing.T) {
@@ -1127,11 +1130,768 @@ func TestExtensionRepoManagementAndGlobalSearchAndLibraryGrid(t *testing.T) {
 	for _, want := range []string{
 		"Vagabond", "/manga/55", "/api/suwayomi/image?path=",
 		"12 unread", "5 downloaded", "Seinen", "Filter library...",
-		"Update Library", `id="btnGrid"`, `id="btnList"`,
+		"Update Library", "Manage Categories", `id="btnGrid"`, `id="btnList"`,
 	} {
 		if !strings.Contains(string(libBody), want) {
 			t.Errorf("/library missing %q", want)
 		}
 	}
 }
+
+func TestExtensionsIconsUpdatesAllAndExternalAPK(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		updatedPkgs []string
+		apkFilename string
+		apkBytes    []byte
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/extension/install" && r.Method == http.MethodPost {
+			mr, err := r.MultipartReader()
+			if err != nil {
+				http.Error(w, "bad multipart", http.StatusBadRequest)
+				return
+			}
+			for {
+				p, err := mr.NextPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					http.Error(w, "read err", http.StatusBadRequest)
+					return
+				}
+				if p.FormName() == "file" {
+					b, _ := io.ReadAll(p)
+					mu.Lock()
+					apkFilename = p.FileName()
+					apkBytes = b
+					mu.Unlock()
+				}
+				p.Close()
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var gql struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gql); err != nil {
+			http.Error(w, "bad gql", http.StatusBadRequest)
+			return
+		}
+		switch {
+		case strings.Contains(gql.Query, "aboutServer"):
+			writeJSON(w, map[string]any{"data": map[string]any{"aboutServer": map[string]any{"version": "v2.0.0"}}})
+		case strings.Contains(gql.Query, "GetExtensionRepos"):
+			writeJSON(w, map[string]any{"data": map[string]any{"settings": map[string]any{"extensionRepos": []string{}}}})
+		case strings.Contains(gql.Query, "ListExtensions"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"extensions": map[string]any{
+						"nodes": []map[string]any{
+							{
+								"pkgName":     "eu.kanade.tachiyomi.extension.en.mangadex",
+								"name":        "MangaDex",
+								"lang":        "en",
+								"versionName": "1.4.2",
+								"iconUrl":     "/api/v1/extension/icon/eu.kanade.tachiyomi.extension.en.mangadex",
+								"isInstalled": true,
+								"hasUpdate":   true,
+								"isObsolete":  false,
+								"isNsfw":      false,
+							},
+							{
+								"pkgName":     "eu.kanade.tachiyomi.extension.en.oldsrc",
+								"name":        "OldSource",
+								"lang":        "en",
+								"versionName": "1.0.0",
+								"iconUrl":     "",
+								"isInstalled": true,
+								"hasUpdate":   false,
+								"isObsolete":  true,
+								"isNsfw":      false,
+							},
+							{
+								"pkgName":     "eu.kanade.tachiyomi.extension.en.adult",
+								"name":        "AdultSrc",
+								"lang":        "en",
+								"versionName": "2.0.0",
+								"iconUrl":     "",
+								"isInstalled": false,
+								"hasUpdate":   false,
+								"isObsolete":  false,
+								"isNsfw":      true,
+							},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "UpdateExtension"):
+			pkg, _ := gql.Variables["pkgName"].(string)
+			if upd, _ := gql.Variables["update"].(bool); upd {
+				mu.Lock()
+				updatedPkgs = append(updatedPkgs, pkg)
+				mu.Unlock()
+			}
+			writeJSON(w, map[string]any{"data": map[string]any{"updateExtension": map[string]any{"extension": map[string]any{"pkgName": pkg, "isInstalled": true, "hasUpdate": false}}}})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// 1. Check /browse?tab=extensions renders icons, letter fallback, Updates available + Update All, 18+ toggle, obsolete badge, and APK upload form.
+	resp, err := http.Get(srv.URL + "/browse?tab=extensions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	html := string(body)
+	for _, want := range []string{
+		"Updates available", "Update All", `value="update-all"`,
+		"/api/suwayomi/image?path=%2Fapi%2Fv1%2Fextension%2Ficon%2Feu.kanade.tachiyomi.extension.en.mangadex",
+		`class="ext-icon-fallback">O<`,
+		`id="extNsfwToggle"`, "Show 18+", `data-nsfw="true"`, "18+", "obsolete",
+		`action="/browse/extensions/install-apk"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("/browse?tab=extensions missing %q", want)
+		}
+	}
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	// 2. POST action=update-all updates only installed extensions with hasUpdate=true.
+	updResp, err := client.PostForm(srv.URL+"/browse/extensions", url.Values{"action": {"update-all"}})
+	if err != nil || updResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("update-all failed: %v %v", err, updResp)
+	}
+	updResp.Body.Close()
+	mu.Lock()
+	if len(updatedPkgs) != 1 || updatedPkgs[0] != "eu.kanade.tachiyomi.extension.en.mangadex" {
+		t.Fatalf("expected only mangadex updated, got %v", updatedPkgs)
+	}
+	mu.Unlock()
+
+	// 3. POST /browse/extensions/install-apk streams valid .apk to Suwayomi.
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "custom-ext.apk")
+	_, _ = fw.Write([]byte("PK-FAKE-APK-DATA"))
+	_ = mw.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/browse/extensions/install-apk", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	apkResp, err := client.Do(req)
+	if err != nil || apkResp.StatusCode != http.StatusSeeOther || !strings.Contains(apkResp.Header.Get("Location"), "note=") {
+		t.Fatalf("install-apk failed: %v %v loc=%q", err, apkResp, apkResp.Header.Get("Location"))
+	}
+	apkResp.Body.Close()
+	mu.Lock()
+	if apkFilename != "custom-ext.apk" || string(apkBytes) != "PK-FAKE-APK-DATA" {
+		t.Fatalf("suwayomi did not receive expected apk: name=%q data=%q", apkFilename, string(apkBytes))
+	}
+	mu.Unlock()
+
+	// Non-.apk upload is rejected.
+	var badBuf bytes.Buffer
+	bmw := multipart.NewWriter(&badBuf)
+	bfw, _ := bmw.CreateFormFile("file", "not-an-ext.zip")
+	_, _ = bfw.Write([]byte("zip"))
+	_ = bmw.Close()
+	badReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/browse/extensions/install-apk", &badBuf)
+	badReq.Header.Set("Content-Type", bmw.FormDataContentType())
+	badResp, err := client.Do(badReq)
+	if err != nil || badResp.StatusCode != http.StatusSeeOther || !strings.Contains(badResp.Header.Get("Location"), "problem=") {
+		t.Fatalf("expected non-apk rejected, got %v %v", err, badResp)
+	}
+	badResp.Body.Close()
+}
+
+func TestSourcePreferencesGetAndUpdate(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		lastPos     int = -1
+		lastChange  map[string]any
+		lastSource  string
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gql struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gql); err != nil {
+			http.Error(w, "bad gql", http.StatusBadRequest)
+			return
+		}
+		switch {
+		case strings.Contains(gql.Query, "aboutServer"):
+			writeJSON(w, map[string]any{"data": map[string]any{"aboutServer": map[string]any{"version": "v2.0.0"}}})
+		case strings.Contains(gql.Query, "ListSources"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"sources": map[string]any{
+						"nodes": []map[string]any{
+							{"id": "101", "name": "MangaDex", "lang": "en", "supportsLatest": true},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "FetchSourceManga"):
+			writeJSON(w, map[string]any{"data": map[string]any{"fetchSourceManga": map[string]any{"hasNextPage": false, "mangas": []any{}}}})
+		case strings.Contains(gql.Query, "GetSourcePreferences"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"source": map[string]any{
+						"id":          "101",
+						"displayName": "MangaDex (en)",
+						"preferences": []map[string]any{
+							{
+								"__typename":                     "CheckBoxPreference",
+								"CheckBoxPreferenceTitle":        "Data Saver",
+								"summary":                        "Use lower quality images",
+								"CheckBoxPreferenceCurrentValue": true,
+							},
+							{
+								"__typename":                 "ListPreference",
+								"ListPreferenceTitle":        "Cover quality",
+								"summary":                    "Thumbnail resolution",
+								"entries":                    []string{"Original", "512px", "256px"},
+								"entryValues":                []string{"orig", "512", "256"},
+								"ListPreferenceCurrentValue": "512",
+							},
+							{
+								"__typename":                             "MultiSelectListPreference",
+								"MultiSelectListPreferenceTitle":         "Content ratings",
+								"entries":                                []string{"Safe", "Suggestive"},
+								"entryValues":                            []string{"safe", "suggestive"},
+								"MultiSelectListPreferenceCurrentValue":  []string{"safe"},
+							},
+							{
+								"__typename":                     "EditTextPreference",
+								"EditTextPreferenceTitle":        "Custom mirror",
+								"EditTextPreferenceCurrentValue": "https://api.mangadex.org",
+							},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "UpdateSourcePreference"):
+			mu.Lock()
+			lastSource, _ = gql.Variables["source"].(string)
+			if p, ok := gql.Variables["position"].(float64); ok {
+				lastPos = int(p)
+			}
+			lastChange, _ = gql.Variables["change"].(map[string]any)
+			mu.Unlock()
+			writeJSON(w, map[string]any{"data": map[string]any{"updateSourcePreference": map[string]any{"source": map[string]any{"id": "101"}}}})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// 1. /browse exposes Source Settings link for selected source
+	bResp, err := http.Get(srv.URL + "/browse?tab=sources&source=101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bBody, _ := io.ReadAll(bResp.Body)
+	bResp.Body.Close()
+	if !strings.Contains(string(bBody), `href="/source/101/settings"`) {
+		t.Errorf("/browse missing Source Settings link")
+	}
+
+	// 2. GET /source/101/settings renders all preferences
+	resp, err := http.Get(srv.URL + "/source/101/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, want := range []string{"MangaDex (en)", "Data Saver", "Cover quality", "Content ratings", "Custom mirror", "https://api.mangadex.org"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("/source/101/settings missing %q", want)
+		}
+	}
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	// 3. POST /source/101/settings updates ListPreference
+	uResp, err := client.PostForm(srv.URL+"/source/101/settings", url.Values{
+		"position": {"1"},
+		"type":     {"ListPreference"},
+		"value":    {"orig"},
+	})
+	if err != nil || uResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("update list pref failed: %v %v", err, uResp)
+	}
+	uResp.Body.Close()
+	mu.Lock()
+	if lastSource != "101" || lastPos != 1 || lastChange["listState"] != "orig" {
+		t.Fatalf("unexpected preference update: src=%q pos=%d change=%+v", lastSource, lastPos, lastChange)
+	}
+	mu.Unlock()
+
+	// 4. POST /source/101/settings updates MultiSelectListPreference
+	mResp, err := client.PostForm(srv.URL+"/source/101/settings", url.Values{
+		"position": {"2"},
+		"type":     {"MultiSelectListPreference"},
+		"values":   {"safe", "suggestive"},
+	})
+	if err != nil || mResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("update multi-select pref failed: %v %v", err, mResp)
+	}
+	mResp.Body.Close()
+	mu.Lock()
+	vals, _ := lastChange["multiSelectState"].([]any)
+	if lastPos != 2 || len(vals) != 2 {
+		t.Fatalf("unexpected multiSelectState: pos=%d change=%+v", lastPos, lastChange)
+	}
+	mu.Unlock()
+}
+
+func TestCategoriesCRUDAndMangaCategoryAssignment(t *testing.T) {
+	type mockCat struct {
+		ID   int
+		Name string
+	}
+	var (
+		mu             sync.Mutex
+		nextID         = 3
+		cats           = []mockCat{{ID: 1, Name: "Reading"}, {ID: 2, Name: "Completed"}}
+		mangaCatIDs    = []int{1}
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gql struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gql); err != nil {
+			http.Error(w, "bad gql", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.Contains(gql.Query, "aboutServer"):
+			writeJSON(w, map[string]any{"data": map[string]any{"aboutServer": map[string]any{"version": "v2.0.0"}}})
+		case strings.Contains(gql.Query, "ListCategories"):
+			nodes := []map[string]any{{"id": 0, "name": "Default", "order": 0, "default": true, "mangas": map[string]any{"totalCount": 0}}}
+			for i, c := range cats {
+				nodes = append(nodes, map[string]any{"id": c.ID, "name": c.Name, "order": i + 1, "default": false, "mangas": map[string]any{"totalCount": 1}})
+			}
+			writeJSON(w, map[string]any{"data": map[string]any{"categories": map[string]any{"nodes": nodes}}})
+		case strings.Contains(gql.Query, "CreateCategory"):
+			name, _ := gql.Variables["name"].(string)
+			c := mockCat{ID: nextID, Name: name}
+			nextID++
+			cats = append(cats, c)
+			writeJSON(w, map[string]any{"data": map[string]any{"createCategory": map[string]any{"category": map[string]any{"id": c.ID, "name": c.Name, "order": len(cats), "default": false}}}})
+		case strings.Contains(gql.Query, "UpdateCategory"):
+			id := int(gql.Variables["id"].(float64))
+			name, _ := gql.Variables["name"].(string)
+			for i := range cats {
+				if cats[i].ID == id {
+					cats[i].Name = name
+				}
+			}
+			writeJSON(w, map[string]any{"data": map[string]any{"updateCategory": map[string]any{"category": map[string]any{"id": id, "name": name}}}})
+		case strings.Contains(gql.Query, "DeleteCategory"):
+			id := int(gql.Variables["id"].(float64))
+			var kept []mockCat
+			for _, c := range cats {
+				if c.ID != id {
+					kept = append(kept, c)
+				}
+			}
+			cats = kept
+			writeJSON(w, map[string]any{"data": map[string]any{"deleteCategory": map[string]any{"category": map[string]any{"id": id}}}})
+		case strings.Contains(gql.Query, "GetManga"):
+			var catNodes []map[string]any
+			for _, cid := range mangaCatIDs {
+				for _, c := range cats {
+					if c.ID == cid {
+						catNodes = append(catNodes, map[string]any{"id": c.ID, "name": c.Name})
+					}
+				}
+			}
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"manga": map[string]any{
+						"id":         55,
+						"title":      "Vagabond",
+						"inLibrary":  true,
+						"sourceId":   "101",
+						"categories": map[string]any{"nodes": catNodes},
+						"chapters":   map[string]any{"nodes": []any{}},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "UpdateMangaCategories"):
+			patch, _ := gql.Variables["patch"].(map[string]any)
+			set := map[int]bool{}
+			for _, id := range mangaCatIDs {
+				set[id] = true
+			}
+			if adds, ok := patch["addToCategories"].([]any); ok {
+				for _, v := range adds {
+					set[int(v.(float64))] = true
+				}
+			}
+			if rems, ok := patch["removeFromCategories"].([]any); ok {
+				for _, v := range rems {
+					delete(set, int(v.(float64)))
+				}
+			}
+			mangaCatIDs = nil
+			for id := range set {
+				mangaCatIDs = append(mangaCatIDs, id)
+			}
+			writeJSON(w, map[string]any{"data": map[string]any{"updateMangaCategories": map[string]any{"manga": map[string]any{"id": 55}}}})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	// 1. GET /categories lists custom categories (not Default)
+	resp, err := http.Get(srv.URL + "/categories")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "Reading") || !strings.Contains(string(body), "Completed") {
+		t.Fatalf("/categories missing expected categories")
+	}
+
+	// 2. Create, rename, and delete category
+	rCreate, err := client.PostForm(srv.URL+"/categories", url.Values{"action": {"create"}, "name": {"Seinen"}})
+	if err != nil || rCreate.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create category failed: %v %v", err, rCreate)
+	}
+	rCreate.Body.Close()
+
+	rRename, err := client.PostForm(srv.URL+"/categories", url.Values{"action": {"rename"}, "id": {"3"}, "name": {"Top Seinen"}})
+	if err != nil || rRename.StatusCode != http.StatusSeeOther {
+		t.Fatalf("rename category failed: %v %v", err, rRename)
+	}
+	rRename.Body.Close()
+
+	mu.Lock()
+	if len(cats) != 3 || cats[2].Name != "Top Seinen" {
+		t.Fatalf("expected renamed category Top Seinen, got %+v", cats)
+	}
+	mu.Unlock()
+
+	rDel, err := client.PostForm(srv.URL+"/categories", url.Values{"action": {"delete"}, "id": {"2"}})
+	if err != nil || rDel.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete category failed: %v %v", err, rDel)
+	}
+	rDel.Body.Close()
+
+	mu.Lock()
+	if len(cats) != 2 {
+		t.Fatalf("expected 2 categories after delete, got %+v", cats)
+	}
+	mu.Unlock()
+
+	// 3. Manga page renders inline Categories picker & POST /manga/55/categories updates assignment
+	mResp, err := http.Get(srv.URL + "/manga/55")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mBody, _ := io.ReadAll(mResp.Body)
+	mResp.Body.Close()
+	if !strings.Contains(string(mBody), `action="/manga/55/categories"`) || !strings.Contains(string(mBody), "Top Seinen") {
+		t.Fatalf("/manga/55 missing inline categories editor")
+	}
+
+	aResp, err := client.PostForm(srv.URL+"/manga/55/categories", url.Values{"categoryIds": {"3"}})
+	if err != nil || aResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("assign manga categories failed: %v %v", err, aResp)
+	}
+	aResp.Body.Close()
+
+	mu.Lock()
+	if len(mangaCatIDs) != 1 || mangaCatIDs[0] != 3 {
+		t.Fatalf("expected manga assigned only to category 3, got %v", mangaCatIDs)
+	}
+	mu.Unlock()
+}
+
+func TestUpdatesFeedAndDayGrouping(t *testing.T) {
+	origNow := now
+	fixedNow := time.Date(2026, 11, 24, 15, 0, 0, 0, time.UTC)
+	now = func() int64 { return fixedNow.Unix() }
+	defer func() { now = origNow }()
+
+	todayUnix := strconv.FormatInt(fixedNow.Add(-2*time.Hour).Unix(), 10)
+	yestUnix := strconv.FormatInt(fixedNow.Add(-26*time.Hour).Unix(), 10)
+	olderUnix := strconv.FormatInt(fixedNow.Add(-5*24*time.Hour).Unix(), 10)
+
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gql struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gql)
+		switch {
+		case strings.Contains(gql.Query, "aboutServer"):
+			writeJSON(w, map[string]any{"data": map[string]any{"aboutServer": map[string]any{"version": "v2.0.0"}}})
+		case strings.Contains(gql.Query, "RecentUpdates"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"chapters": map[string]any{
+						"nodes": []map[string]any{
+							{
+								"id": 901, "name": "Ch. 1100", "chapterNumber": 1100, "fetchedAt": todayUnix,
+								"isRead": false, "isDownloaded": false,
+								"manga": map[string]any{"id": 10, "title": "One Piece", "thumbnailUrl": "/api/v1/manga/10/thumbnail", "inLibrary": true},
+							},
+							{
+								"id": 902, "name": "Ch. 327", "chapterNumber": 327, "fetchedAt": yestUnix,
+								"isRead": true, "isDownloaded": true,
+								"manga": map[string]any{"id": 55, "title": "Vagabond", "thumbnailUrl": "/api/v1/manga/55/thumbnail", "inLibrary": true},
+							},
+							{
+								"id": 903, "name": "Ch. 375", "chapterNumber": 375, "fetchedAt": olderUnix,
+								"isRead": false, "isDownloaded": false,
+								"manga": map[string]any{"id": 77, "title": "Berserk", "thumbnailUrl": "/api/v1/manga/77/thumbnail", "inLibrary": true},
+							},
+						},
+					},
+				},
+			})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	st.Timezone = "UTC"
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/updates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	html := string(body)
+
+	for _, want := range []string{
+		`href="/updates"`, "Recent Updates", "Update Library",
+		"Today", "Yesterday", "Thu, 19 Nov 2026",
+		"One Piece", "Ch. 1100", `/manga/10`, `/read/901`, `action="/manga/10/chapter/901"`,
+		"Vagabond", "Ch. 327", "saved",
+		"Berserk", "Ch. 375",
+		"/api/suwayomi/image?path=%2Fapi%2Fv1%2Fmanga%2F10%2Fthumbnail",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("/updates missing %q", want)
+		}
+	}
+}
+
+func TestSourceMigrationCopiesReadChaptersAndRemovesOld(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		inLibrary   = map[int64]bool{55: true, 88: false}
+		markedRead  = map[int64]bool{}
+		addedCatIDs []int
+	)
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var gql struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gql)
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.Contains(gql.Query, "aboutServer"):
+			writeJSON(w, map[string]any{"data": map[string]any{"aboutServer": map[string]any{"version": "v2.0.0"}}})
+		case strings.Contains(gql.Query, "ListSources"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"sources": map[string]any{
+						"nodes": []map[string]any{
+							{"id": "101", "name": "MangaDex", "lang": "en", "supportsLatest": true},
+							{"id": "202", "name": "Comick", "lang": "en", "supportsLatest": true},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "FetchSourceManga"):
+			srcID, _ := gql.Variables["source"].(string)
+			if srcID == "202" {
+				writeJSON(w, map[string]any{
+					"data": map[string]any{
+						"fetchSourceManga": map[string]any{
+							"hasNextPage": false,
+							"mangas": []map[string]any{
+								{"id": 88, "title": "Vagabond", "thumbnailUrl": "/api/v1/manga/88/thumbnail", "inLibrary": inLibrary[88], "sourceId": "202"},
+							},
+						},
+					},
+				})
+				return
+			}
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"fetchSourceManga": map[string]any{
+						"hasNextPage": false,
+						"mangas": []map[string]any{
+							{"id": 55, "title": "Vagabond", "thumbnailUrl": "/api/v1/manga/55/thumbnail", "inLibrary": inLibrary[55], "sourceId": "101"},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "GetManga"):
+			id := int64(gql.Variables["id"].(float64))
+			if id == 55 {
+				writeJSON(w, map[string]any{
+					"data": map[string]any{
+						"manga": map[string]any{
+							"id": 55, "title": "Vagabond", "inLibrary": inLibrary[55], "sourceId": "101",
+							"source":     map[string]any{"id": "101", "name": "MangaDex", "lang": "en"},
+							"categories": map[string]any{"nodes": []map[string]any{{"id": 4, "name": "Seinen"}}},
+							"chapters": map[string]any{
+								"nodes": []map[string]any{
+									{"id": 501, "name": "Ch 1", "chapterNumber": 1, "isRead": true, "sourceOrder": 1},
+									{"id": 502, "name": "Ch 2", "chapterNumber": 2, "isRead": true, "sourceOrder": 2},
+									{"id": 503, "name": "Ch 3", "chapterNumber": 3, "isRead": false, "sourceOrder": 3},
+								},
+							},
+						},
+					},
+				})
+				return
+			}
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"manga": map[string]any{
+						"id": 88, "title": "Vagabond", "inLibrary": inLibrary[88], "sourceId": "202",
+						"source":     map[string]any{"id": "202", "name": "Comick", "lang": "en"},
+						"categories": map[string]any{"nodes": []any{}},
+						"chapters": map[string]any{
+							"nodes": []map[string]any{
+								{"id": 801, "name": "Chapter 1", "chapterNumber": 1, "isRead": false, "sourceOrder": 1},
+								{"id": 802, "name": "Chapter 2", "chapterNumber": 2, "isRead": false, "sourceOrder": 2},
+								{"id": 803, "name": "Chapter 3", "chapterNumber": 3, "isRead": false, "sourceOrder": 3},
+							},
+						},
+					},
+				},
+			})
+		case strings.Contains(gql.Query, "UpdateManga("):
+			id := int64(gql.Variables["id"].(float64))
+			inLib, _ := gql.Variables["inLibrary"].(bool)
+			inLibrary[id] = inLib
+			writeJSON(w, map[string]any{"data": map[string]any{"updateManga": map[string]any{"manga": map[string]any{"id": id, "inLibrary": inLib}}}})
+		case strings.Contains(gql.Query, "UpdateMangaCategories"):
+			if patch, ok := gql.Variables["patch"].(map[string]any); ok {
+				if adds, ok := patch["addToCategories"].([]any); ok {
+					for _, v := range adds {
+						addedCatIDs = append(addedCatIDs, int(v.(float64)))
+					}
+				}
+			}
+			writeJSON(w, map[string]any{"data": map[string]any{"updateMangaCategories": map[string]any{"manga": map[string]any{"id": 88}}}})
+		case strings.Contains(gql.Query, "FetchChapters"):
+			writeJSON(w, map[string]any{"data": map[string]any{"fetchChapters": map[string]any{"chapters": []any{}}}})
+		case strings.Contains(gql.Query, "MarkChapterRead"):
+			id := int64(gql.Variables["id"].(float64))
+			isRead, _ := gql.Variables["isRead"].(bool)
+			markedRead[id] = isRead
+			writeJSON(w, map[string]any{"data": map[string]any{"updateChapter": map[string]any{"chapter": map[string]any{"id": id, "isRead": isRead}}}})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	// 1. GET /manga/55/migrate lists Comick candidate (id 88) and excludes self (id 55)
+	resp, err := http.Get(srv.URL + "/manga/55/migrate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	html := string(body)
+	if !strings.Contains(html, "Comick") || !strings.Contains(html, `value="88"`) || strings.Contains(html, `value="55"`) {
+		t.Fatalf("/manga/55/migrate unexpected candidates: %s", html)
+	}
+
+	// 2. POST /manga/55/migrate migrates to 88, copies ch 1 & 2 read state, copies category 4, and removes 55 from library
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	mResp, err := client.PostForm(srv.URL+"/manga/55/migrate", url.Values{"targetMangaId": {"88"}})
+	if err != nil || mResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("migrate POST failed: %v %v", err, mResp)
+	}
+	mResp.Body.Close()
+	if loc := mResp.Header.Get("Location"); !strings.HasPrefix(loc, "/manga/88?note=") {
+		t.Fatalf("expected redirect to /manga/88?note=..., got %q", loc)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !inLibrary[88] || inLibrary[55] {
+		t.Fatalf("expected target 88 in library and old 55 removed, got %+v", inLibrary)
+	}
+	if !markedRead[801] || !markedRead[802] || markedRead[803] {
+		t.Fatalf("expected chapters 801 & 802 marked read and 803 untouched, got %+v", markedRead)
+	}
+	if len(addedCatIDs) != 1 || addedCatIDs[0] != 4 {
+		t.Fatalf("expected category 4 copied to migrated manga, got %v", addedCatIDs)
+	}
+}
+
 

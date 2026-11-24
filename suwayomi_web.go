@@ -76,6 +76,7 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 		globalResults  []globalSearchGroup
 		extRepos       []string
 		extLangs       []string
+		updateExts     []SuwayomiExtension
 		installedExts  []SuwayomiExtension
 		availableExts  []SuwayomiExtension
 		problem        = r.URL.Query().Get("problem")
@@ -106,7 +107,11 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					if e.IsInstalled {
-						installedExts = append(installedExts, e)
+						if e.HasUpdate {
+							updateExts = append(updateExts, e)
+						} else {
+							installedExts = append(installedExts, e)
+						}
 					} else {
 						availableExts = append(availableExts, e)
 					}
@@ -181,6 +186,7 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 		"PrevPage":       page - 1,
 		"NextPage":       page + 1,
 		"BrowseResult":   browseResult,
+		"UpdateExts":     updateExts,
 		"InstalledExts":  installedExts,
 		"AvailableExts":  availableExts,
 		"Note":           note,
@@ -243,6 +249,31 @@ func (s shelf) handleExtensionAction(w http.ResponseWriter, r *http.Request) {
 	case "update":
 		err = suw.updateExtension(r.Context(), pkgName, false, true, false)
 		msg = "Extension updated."
+	case "update-all":
+		exts, lerr := suw.listExtensions(r.Context())
+		if lerr != nil {
+			err = lerr
+			break
+		}
+		updated := 0
+		for _, e := range exts {
+			if e.IsInstalled && e.HasUpdate {
+				if uerr := suw.updateExtension(r.Context(), e.PkgName, false, true, false); uerr != nil {
+					err = uerr
+					break
+				}
+				updated++
+			}
+		}
+		if err == nil {
+			if updated == 0 {
+				msg = "No extensions needed updating."
+			} else if updated == 1 {
+				msg = "Updated 1 extension."
+			} else {
+				msg = fmt.Sprintf("Updated %d extensions.", updated)
+			}
+		}
 	case "uninstall":
 		err = suw.updateExtension(r.Context(), pkgName, false, false, true)
 		msg = "Extension uninstalled."
@@ -298,6 +329,195 @@ func (s shelf) handleExtensionAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/browse?tab=extensions&note="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
+func (s shelf) handleExtensionInstallAPK(w http.ResponseWriter, r *http.Request) {
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Redirect(w, r, "/browse?tab=extensions&problem=Suwayomi+not+configured.", http.StatusSeeOther)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128<<20)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		http.Redirect(w, r, "/browse?tab=extensions&problem=Expected+multipart+file+upload.", http.StatusSeeOther)
+		return
+	}
+	var installed bool
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			http.Redirect(w, r, "/browse?tab=extensions&problem="+url.QueryEscape("Upload failed: "+err.Error()), http.StatusSeeOther)
+			return
+		}
+		if p.FormName() == "file" {
+			fname := strings.TrimSpace(p.FileName())
+			if fname == "" {
+				p.Close()
+				http.Redirect(w, r, "/browse?tab=extensions&problem=Please+choose+an+.apk+file.", http.StatusSeeOther)
+				return
+			}
+			if !strings.HasSuffix(strings.ToLower(fname), ".apk") {
+				p.Close()
+				http.Redirect(w, r, "/browse?tab=extensions&problem=Only+.apk+extension+files+are+supported.", http.StatusSeeOther)
+				return
+			}
+			ierr := suw.installExternalExtension(r.Context(), fname, p)
+			p.Close()
+			if ierr != nil {
+				http.Redirect(w, r, "/browse?tab=extensions&problem="+url.QueryEscape(ierr.Error()), http.StatusSeeOther)
+				return
+			}
+			installed = true
+			break
+		}
+		p.Close()
+	}
+	if !installed {
+		http.Redirect(w, r, "/browse?tab=extensions&problem=Missing+file+upload.", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/browse?tab=extensions&note="+url.QueryEscape("External APK installed."), http.StatusSeeOther)
+}
+
+// ---- Source Preferences -----------------------------------------------------
+
+type sourcePrefOptionView struct {
+	Label    string
+	Value    string
+	Selected bool
+}
+
+type sourcePrefView struct {
+	Position    int
+	Type        string
+	Title       string
+	Summary     string
+	CurrentBool bool
+	CurrentStr  string
+	Options     []sourcePrefOptionView
+}
+
+func (s shelf) handleSourceSettingsPage(w http.ResponseWriter, r *http.Request) {
+	sourceID := strings.TrimSpace(r.PathValue("id"))
+	if sourceID == "" {
+		http.Error(w, "invalid source id", http.StatusBadRequest)
+		return
+	}
+	entries, _ := s.list()
+	nav := s.buildNav(r, "browse", len(entries))
+
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Redirect(w, r, "/browse?problem=Configure+Suwayomi+in+Settings+first.", http.StatusSeeOther)
+		return
+	}
+
+	prefs, err := suw.getSourcePreferences(r.Context(), sourceID)
+	if err != nil {
+		http.Redirect(w, r, "/browse?tab=sources&source="+url.QueryEscape(sourceID)+"&problem="+url.QueryEscape("Could not load source settings: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+
+	views := make([]sourcePrefView, 0, len(prefs.Preferences))
+	for _, p := range prefs.Preferences {
+		pv := sourcePrefView{
+			Position:    p.Position,
+			Type:        p.Type,
+			Title:       p.Title,
+			Summary:     p.Summary,
+			CurrentBool: p.CurrentBool,
+			CurrentStr:  p.CurrentStr,
+		}
+		if p.Type == "ListPreference" || p.Type == "MultiSelectListPreference" {
+			selectedSet := map[string]bool{}
+			if p.Type == "ListPreference" {
+				selectedSet[p.CurrentStr] = true
+			} else {
+				for _, v := range p.CurrentMulti {
+					selectedSet[v] = true
+				}
+			}
+			for i, val := range p.EntryValues {
+				label := val
+				if i < len(p.Entries) && p.Entries[i] != "" {
+					label = p.Entries[i]
+				}
+				pv.Options = append(pv.Options, sourcePrefOptionView{
+					Label:    label,
+					Value:    val,
+					Selected: selectedSet[val],
+				})
+			}
+		}
+		views = append(views, pv)
+	}
+
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := sourceSettingsTmpl.Execute(w, map[string]any{
+		"Nonce":       nonce,
+		"Nav":         nav,
+		"SourceID":    prefs.SourceID,
+		"DisplayName": prefs.DisplayName,
+		"Preferences": views,
+		"Note":        r.URL.Query().Get("note"),
+		"Problem":     r.URL.Query().Get("problem"),
+	}); err != nil {
+		log.Printf("yata: rendering source settings page failed: %v", err)
+	}
+}
+
+func (s shelf) handleSourceSettingsUpdate(w http.ResponseWriter, r *http.Request) {
+	sourceID := strings.TrimSpace(r.PathValue("id"))
+	if sourceID == "" {
+		http.Error(w, "invalid source id", http.StatusBadRequest)
+		return
+	}
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Error(w, "suwayomi not configured", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/source/%s/settings?problem=Invalid+form.", url.PathEscape(sourceID)), http.StatusSeeOther)
+		return
+	}
+	pos, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("position")))
+	if err != nil || pos < 0 {
+		http.Redirect(w, r, fmt.Sprintf("/source/%s/settings?problem=Invalid+preference+position.", url.PathEscape(sourceID)), http.StatusSeeOther)
+		return
+	}
+	prefType := strings.TrimSpace(r.PostFormValue("type"))
+	var change map[string]any
+	switch prefType {
+	case "CheckBoxPreference":
+		change = map[string]any{"checkBoxState": r.PostFormValue("value") == "true"}
+	case "SwitchPreference":
+		change = map[string]any{"switchState": r.PostFormValue("value") == "true"}
+	case "ListPreference":
+		change = map[string]any{"listState": r.PostFormValue("value")}
+	case "MultiSelectListPreference":
+		vals := r.PostForm["values"]
+		if vals == nil {
+			vals = []string{}
+		}
+		change = map[string]any{"multiSelectState": vals}
+	case "EditTextPreference":
+		change = map[string]any{"editTextState": r.PostFormValue("value")}
+	default:
+		http.Redirect(w, r, fmt.Sprintf("/source/%s/settings?problem=Unsupported+preference+type.", url.PathEscape(sourceID)), http.StatusSeeOther)
+		return
+	}
+	if err := suw.updateSourcePreference(r.Context(), sourceID, pos, change); err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/source/%s/settings?problem=%s", url.PathEscape(sourceID), url.QueryEscape(err.Error())), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/source/%s/settings?note=%s", url.PathEscape(sourceID), url.QueryEscape("Preference saved.")), http.StatusSeeOther)
+}
+
 // ---- Manga Details ----------------------------------------------------------
 
 type mangaChapterView struct {
@@ -309,6 +529,12 @@ type mangaChapterView struct {
 	IsRead       bool
 	IsDownloaded bool
 	PageCount    int
+}
+
+type mangaCategoryChoice struct {
+	ID      int
+	Name    string
+	Checked bool
 }
 
 func (s shelf) handleMangaPage(w http.ResponseWriter, r *http.Request) {
@@ -330,6 +556,28 @@ func (s shelf) handleMangaPage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "manga not found: "+err.Error(), http.StatusNotFound)
 		return
+	}
+
+	var catChoices []mangaCategoryChoice
+	if allCats, err := suw.listCategories(r.Context()); err == nil {
+		assignedByID := make(map[int]bool, len(detail.CategoryIDs))
+		for _, id := range detail.CategoryIDs {
+			assignedByID[id] = true
+		}
+		assignedByName := make(map[string]bool, len(detail.Categories))
+		for _, name := range detail.Categories {
+			assignedByName[name] = true
+		}
+		for _, c := range allCats {
+			if c.ID == 0 || strings.EqualFold(c.Name, "Default") {
+				continue
+			}
+			catChoices = append(catChoices, mangaCategoryChoice{
+				ID:      c.ID,
+				Name:    c.Name,
+				Checked: assignedByID[c.ID] || assignedByName[c.Name],
+			})
+		}
 	}
 
 	var readCount, dlCount int
@@ -364,18 +612,72 @@ func (s shelf) handleMangaPage(w http.ResponseWriter, r *http.Request) {
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := mangaTmpl.Execute(w, map[string]any{
-		"Nonce":      nonce,
-		"Nav":        nav,
-		"Manga":      detail,
-		"Chapters":   chapters,
-		"ReadCount":  readCount,
-		"DlCount":    dlCount,
-		"TotalCount": len(chapters),
-		"Note":       r.URL.Query().Get("note"),
-		"Problem":    r.URL.Query().Get("problem"),
+		"Nonce":            nonce,
+		"Nav":              nav,
+		"Manga":            detail,
+		"Chapters":         chapters,
+		"CategoryChoices":  catChoices,
+		"ReadCount":        readCount,
+		"DlCount":          dlCount,
+		"TotalCount":       len(chapters),
+		"Note":             r.URL.Query().Get("note"),
+		"Problem":          r.URL.Query().Get("problem"),
 	}); err != nil {
 		log.Printf("yata: rendering manga page failed: %v", err)
 	}
+}
+
+func (s shelf) handleMangaCategoriesUpdate(w http.ResponseWriter, r *http.Request) {
+	mangaID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || mangaID <= 0 {
+		http.Error(w, "invalid manga id", http.StatusBadRequest)
+		return
+	}
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Error(w, "suwayomi not configured", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=Invalid+form.", mangaID), http.StatusSeeOther)
+		return
+	}
+	wantSet := map[int]bool{}
+	for _, raw := range r.PostForm["categoryIds"] {
+		if id, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && id > 0 {
+			wantSet[id] = true
+		}
+	}
+
+	detail, err := suw.getManga(r.Context(), mangaID)
+	if err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=%s", mangaID, url.QueryEscape(err.Error())), http.StatusSeeOther)
+		return
+	}
+	curSet := map[int]bool{}
+	for _, id := range detail.CategoryIDs {
+		curSet[id] = true
+	}
+
+	var addTo, removeFrom []int
+	for id := range wantSet {
+		if !curSet[id] {
+			addTo = append(addTo, id)
+		}
+	}
+	for id := range curSet {
+		if !wantSet[id] {
+			removeFrom = append(removeFrom, id)
+		}
+	}
+	sort.Ints(addTo)
+	sort.Ints(removeFrom)
+
+	if err := suw.updateMangaCategories(r.Context(), mangaID, addTo, removeFrom); err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=%s", mangaID, url.QueryEscape(err.Error())), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/manga/%d?note=Categories+updated.", mangaID), http.StatusSeeOther)
 }
 
 func (s shelf) handleMangaLibraryToggle(w http.ResponseWriter, r *http.Request) {
@@ -426,6 +728,10 @@ func (s shelf) handleMangaChapterAction(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
+	redir := fmt.Sprintf("/manga/%d", mangaID)
+	if target := strings.TrimSpace(r.PostFormValue("redirect")); target == "/updates" {
+		redir = target
+	}
 	suw := s.suwayomi()
 	if suw == nil {
 		http.Error(w, "suwayomi not configured", http.StatusBadRequest)
@@ -448,14 +754,322 @@ func (s shelf) handleMangaChapterAction(w http.ResponseWriter, r *http.Request) 
 		actErr = suw.markChapterRead(r.Context(), chID, false, 0)
 		msg = "Chapter marked unread."
 	default:
-		http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=Unknown+action.", mangaID), http.StatusSeeOther)
+		http.Redirect(w, r, redir+"?problem=Unknown+action.", http.StatusSeeOther)
 		return
 	}
 	if actErr != nil {
-		http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=%s", mangaID, url.QueryEscape(actErr.Error())), http.StatusSeeOther)
+		http.Redirect(w, r, redir+"?problem="+url.QueryEscape(actErr.Error()), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("/manga/%d?note=%s", mangaID, url.QueryEscape(msg)), http.StatusSeeOther)
+	http.Redirect(w, r, redir+"?note="+url.QueryEscape(msg), http.StatusSeeOther)
+}
+
+// ---- Categories CRUD --------------------------------------------------------
+
+func (s shelf) handleCategoriesPage(w http.ResponseWriter, r *http.Request) {
+	entries, _ := s.list()
+	nav := s.buildNav(r, "library", len(entries))
+
+	var (
+		configured bool
+		categories []SuwayomiCategory
+		problem    = r.URL.Query().Get("problem")
+		note       = r.URL.Query().Get("note")
+	)
+	if suw := s.suwayomi(); suw != nil {
+		configured = true
+		cats, err := suw.listCategories(r.Context())
+		if err != nil {
+			problem = "Could not load categories: " + err.Error()
+		} else {
+			for _, c := range cats {
+				if c.ID == 0 || strings.EqualFold(c.Name, "Default") {
+					continue
+				}
+				categories = append(categories, c)
+			}
+		}
+	}
+
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := categoriesTmpl.Execute(w, map[string]any{
+		"Nonce":      nonce,
+		"Nav":        nav,
+		"Configured": configured,
+		"Categories": categories,
+		"Note":       note,
+		"Problem":    problem,
+	}); err != nil {
+		log.Printf("yata: rendering categories page failed: %v", err)
+	}
+}
+
+func (s shelf) handleCategoriesAction(w http.ResponseWriter, r *http.Request) {
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Redirect(w, r, "/categories?problem=Suwayomi+not+configured.", http.StatusSeeOther)
+		return
+	}
+	action := strings.TrimSpace(r.PostFormValue("action"))
+	var err error
+	var msg string
+	switch action {
+	case "create":
+		name := strings.TrimSpace(r.PostFormValue("name"))
+		if name == "" {
+			http.Redirect(w, r, "/categories?problem=Category+name+is+required.", http.StatusSeeOther)
+			return
+		}
+		_, err = suw.createCategory(r.Context(), name)
+		msg = "Category created."
+	case "rename":
+		id, perr := strconv.Atoi(strings.TrimSpace(r.PostFormValue("id")))
+		name := strings.TrimSpace(r.PostFormValue("name"))
+		if perr != nil || id <= 0 || name == "" {
+			http.Redirect(w, r, "/categories?problem=Valid+category+ID+and+name+are+required.", http.StatusSeeOther)
+			return
+		}
+		err = suw.updateCategory(r.Context(), id, name)
+		msg = "Category renamed."
+	case "delete":
+		id, perr := strconv.Atoi(strings.TrimSpace(r.PostFormValue("id")))
+		if perr != nil || id <= 0 {
+			http.Redirect(w, r, "/categories?problem=Invalid+category+ID.", http.StatusSeeOther)
+			return
+		}
+		err = suw.deleteCategory(r.Context(), id)
+		msg = "Category deleted."
+	default:
+		http.Redirect(w, r, "/categories?problem=Unknown+action.", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		http.Redirect(w, r, "/categories?problem="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/categories?note="+url.QueryEscape(msg), http.StatusSeeOther)
+}
+
+// ---- Updates Feed -----------------------------------------------------------
+
+type updateItemView struct {
+	ID            int64
+	Name          string
+	ChapterNumber string
+	Scanlator     string
+	When          string
+	IsRead        bool
+	IsDownloaded  bool
+	MangaID       int64
+	MangaTitle    string
+	ThumbnailURL  string
+}
+
+type updateDayGroup struct {
+	Label string
+	Items []updateItemView
+}
+
+func (s shelf) handleUpdatesPage(w http.ResponseWriter, r *http.Request) {
+	entries, _ := s.list()
+	nav := s.buildNav(r, "updates", len(entries))
+	loc := s.cfg.location()
+	today := dayStart(time.Unix(now(), 0).In(loc))
+
+	var (
+		configured bool
+		groups     []updateDayGroup
+		total      int
+		problem    = r.URL.Query().Get("problem")
+		note       = r.URL.Query().Get("note")
+	)
+
+	if suw := s.suwayomi(); suw != nil {
+		configured = true
+		updates, err := suw.listRecentUpdates(r.Context(), 100)
+		if err != nil {
+			problem = "Could not load recent updates: " + err.Error()
+		} else {
+			total = len(updates)
+			idxByLabel := map[string]int{}
+			for _, u := range updates {
+				tsUnix := u.FetchedAt
+				if tsUnix == 0 {
+					tsUnix = u.UploadDate
+				}
+				label := "Earlier"
+				if tsUnix > 0 {
+					t := time.Unix(tsUnix, 0).In(loc)
+					d := daysBetween(dayStart(t), today)
+					switch {
+					case d == 0:
+						label = "Today"
+					case d == 1:
+						label = "Yesterday"
+					default:
+						label = t.Format("Mon, 2 Jan 2006")
+					}
+				}
+				idx, ok := idxByLabel[label]
+				if !ok {
+					idx = len(groups)
+					idxByLabel[label] = idx
+					groups = append(groups, updateDayGroup{Label: label})
+				}
+				groups[idx].Items = append(groups[idx].Items, updateItemView{
+					ID:            u.ID,
+					Name:          u.Name,
+					ChapterNumber: chapterNumber(u.ChapterNumber),
+					Scanlator:     u.Scanlator,
+					When:          humanTime(tsUnix),
+					IsRead:        u.IsRead,
+					IsDownloaded:  u.IsDownloaded,
+					MangaID:       u.MangaID,
+					MangaTitle:    u.MangaTitle,
+					ThumbnailURL:  u.ThumbnailURL,
+				})
+			}
+		}
+	}
+
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := updatesTmpl.Execute(w, map[string]any{
+		"Nonce":      nonce,
+		"Nav":        nav,
+		"Configured": configured,
+		"Groups":     groups,
+		"Total":      total,
+		"Note":       note,
+		"Problem":    problem,
+	}); err != nil {
+		log.Printf("yata: rendering updates page failed: %v", err)
+	}
+}
+
+// ---- Source Migration -------------------------------------------------------
+
+func (s shelf) handleMangaMigratePage(w http.ResponseWriter, r *http.Request) {
+	mangaID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || mangaID <= 0 {
+		http.Error(w, "invalid manga id", http.StatusBadRequest)
+		return
+	}
+	entries, _ := s.list()
+	nav := s.buildNav(r, "library", len(entries))
+
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Redirect(w, r, "/browse?problem=Configure+Suwayomi+in+Settings+first.", http.StatusSeeOther)
+		return
+	}
+	detail, err := suw.getManga(r.Context(), mangaID)
+	if err != nil {
+		http.Error(w, "manga not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		query = detail.Title
+	}
+	problem := r.URL.Query().Get("problem")
+
+	var groups []globalSearchGroup
+	sources, err := suw.listSources(r.Context())
+	if err != nil {
+		problem = "Could not load sources: " + err.Error()
+	} else if query != "" {
+		rawGroups := runGlobalSearch(r.Context(), suw, sources, query)
+		for _, g := range rawGroups {
+			var filtered []SuwayomiMangaCard
+			for _, m := range g.Mangas {
+				if m.ID != mangaID {
+					filtered = append(filtered, m)
+				}
+			}
+			if len(filtered) > 0 {
+				groups = append(groups, globalSearchGroup{Source: g.Source, Mangas: filtered})
+			}
+		}
+	}
+
+	nonce := newNonce()
+	contentSecurityPolicy(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := migrateTmpl.Execute(w, map[string]any{
+		"Nonce":   nonce,
+		"Nav":     nav,
+		"Manga":   detail,
+		"Query":   query,
+		"Groups":  groups,
+		"Problem": problem,
+		"Note":    r.URL.Query().Get("note"),
+	}); err != nil {
+		log.Printf("yata: rendering migrate page failed: %v", err)
+	}
+}
+
+func (s shelf) handleMangaMigratePost(w http.ResponseWriter, r *http.Request) {
+	mangaID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || mangaID <= 0 {
+		http.Error(w, "invalid manga id", http.StatusBadRequest)
+		return
+	}
+	targetID, err := strconv.ParseInt(strings.TrimSpace(r.PostFormValue("targetMangaId")), 10, 64)
+	if err != nil || targetID <= 0 || targetID == mangaID {
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d/migrate?problem=Invalid+target+manga.", mangaID), http.StatusSeeOther)
+		return
+	}
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Error(w, "suwayomi not configured", http.StatusBadRequest)
+		return
+	}
+
+	oldManga, err := suw.getManga(r.Context(), mangaID)
+	if err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d/migrate?problem=%s", mangaID, url.QueryEscape(err.Error())), http.StatusSeeOther)
+		return
+	}
+
+	if err := suw.toggleLibrary(r.Context(), targetID, true); err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d/migrate?problem=%s", mangaID, url.QueryEscape("Could not add target manga to library: "+err.Error())), http.StatusSeeOther)
+		return
+	}
+	if len(oldManga.CategoryIDs) > 0 {
+		_ = suw.updateMangaCategories(r.Context(), targetID, oldManga.CategoryIDs, nil)
+	}
+	_ = suw.fetchChapters(r.Context(), targetID)
+
+	readNums := map[float64]bool{}
+	for _, ch := range oldManga.Chapters {
+		if ch.IsRead && ch.ChapterNumber > 0 {
+			readNums[ch.ChapterNumber] = true
+		}
+	}
+
+	copied := 0
+	if newManga, err := suw.getManga(r.Context(), targetID); err == nil {
+		for _, ch := range newManga.Chapters {
+			if !ch.IsRead && ch.ChapterNumber > 0 && readNums[ch.ChapterNumber] {
+				if err := suw.markChapterRead(r.Context(), ch.ID, true, -1); err == nil {
+					copied++
+				}
+			}
+		}
+	}
+
+	if err := suw.toggleLibrary(r.Context(), mangaID, false); err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/manga/%d?problem=%s", targetID, url.QueryEscape("Migrated target, but failed to remove old manga from library: "+err.Error())), http.StatusSeeOther)
+		return
+	}
+
+	msg := fmt.Sprintf("Migrated from %s (%d read chapters copied).", oldManga.Title, copied)
+	http.Redirect(w, r, fmt.Sprintf("/manga/%d?note=%s", targetID, url.QueryEscape(msg)), http.StatusSeeOther)
 }
 
 // ---- Downloads & Updates ----------------------------------------------------
@@ -532,7 +1146,7 @@ func (s shelf) handleDownloadsPage(w http.ResponseWriter, r *http.Request) {
 
 func (s shelf) handleDownloadsControl(w http.ResponseWriter, r *http.Request) {
 	redir := "/downloads"
-	if target := strings.TrimSpace(r.PostFormValue("redirect")); target == "/library" || target == "/downloads" {
+	if target := strings.TrimSpace(r.PostFormValue("redirect")); target == "/library" || target == "/downloads" || target == "/updates" {
 		redir = target
 	}
 	suw := s.suwayomi()

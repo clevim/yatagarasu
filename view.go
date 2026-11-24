@@ -61,9 +61,9 @@ const baseHead = favicon + `
  .crow{color:var(--accent);font-weight:700}
  .ver{font-size:.68rem;font-weight:600;color:var(--muted);border:1px solid var(--line);
       border-radius:999px;padding:.05rem .4rem;font-variant-numeric:tabular-nums}
- .nav{display:flex;flex-wrap:wrap;gap:.15rem;align-items:center}
- .nav a{display:inline-flex;align-items:center;gap:.3rem;padding:.35rem .55rem;border-radius:var(--radius);
-        text-decoration:none;color:var(--muted);font-size:.835rem;font-weight:530;white-space:nowrap;
+ .nav{display:flex;flex-wrap:wrap;gap:.12rem;align-items:center}
+ .nav a{display:inline-flex;align-items:center;gap:.28rem;padding:.34rem .48rem;border-radius:var(--radius);
+        text-decoration:none;color:var(--muted);font-size:.825rem;font-weight:530;white-space:nowrap;
         border:1px solid transparent;transition:background 140ms var(--ease),color 140ms var(--ease)}
  .nav a:hover{color:var(--ink);background:var(--surface)}
  .nav a.active{color:var(--ink);background:var(--surface);border-color:var(--line);font-weight:600}
@@ -174,6 +174,7 @@ const navHeader = `
   <nav class="nav" aria-label="Main">
     <a href="/"{{if eq .Nav.Active "shelf"}} class="active"{{end}}>Shelf{{if .Nav.ShelfCount}} <span class="pill">{{.Nav.ShelfCount}}</span>{{end}}</a>
     <a href="/library"{{if eq .Nav.Active "library"}} class="active"{{end}}>Library{{if .Nav.LibraryCount}} <span class="pill">{{.Nav.LibraryCount}}</span>{{end}}</a>
+    <a href="/updates"{{if eq .Nav.Active "updates"}} class="active"{{end}}>Updates</a>
     <a href="/browse"{{if eq .Nav.Active "browse"}} class="active"{{end}}>Browse</a>
     <a href="/downloads"{{if eq .Nav.Active "downloads"}} class="active"{{end}}>Downloads</a>
     <a href="/translate"{{if eq .Nav.Active "translate"}} class="active"{{end}}>Translate</a>
@@ -409,6 +410,7 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
       <button type="button" id="btnList">List</button>
     </div>
     {{if .SuwayomiConnected}}
+    <a class="btn sm" href="/categories">Manage Categories</a>
     <form method="post" action="/downloads/control" style="margin:0">
       <input type="hidden" name="action" value="update-library">
       <input type="hidden" name="redirect" value="/library">
@@ -965,15 +967,25 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
               padding-bottom:.45rem;border-bottom:1px solid var(--line)}
  .global-head h2{display:flex;align-items:center;gap:.45rem;font-size:.98rem}
  .pager{display:flex;justify-content:space-between;align-items:center;padding-top:.75rem;border-top:1px solid var(--line)}
- .ext-icon{width:24px;height:24px;border-radius:.3rem;object-fit:cover;vertical-align:middle;margin-right:.45rem;background:var(--raise)}
+ .ext-icon{width:32px;height:32px;border-radius:.4rem;object-fit:cover;vertical-align:middle;margin-right:.55rem;background:var(--raise);border:1px solid var(--line);flex-shrink:0}
+ .ext-icon-fallback{width:32px;height:32px;border-radius:.4rem;display:inline-flex;align-items:center;justify-content:center;
+                    font-size:.82rem;font-weight:650;color:var(--muted);background:var(--raise);border:1px solid var(--line);
+                    margin-right:.55rem;flex-shrink:0}
  .ext-name{display:inline-flex;align-items:center;font-weight:550}
  .ext-row.hidden{display:none}
+ .nsfw-toggle{display:inline-flex;align-items:center;gap:.35rem;font-size:.825rem;color:var(--muted);white-space:nowrap;cursor:pointer;padding:.25rem .4rem;user-select:none}
+ .nsfw-toggle input{accent-color:var(--accent-solid);margin:0}
+ .tag.warn{background:var(--warn-bg);color:var(--warn)}
+ .tag.bad{background:var(--bad-bg);color:var(--bad)}
  .repo-list{list-style:none;margin:0 0 .85rem;padding:0}
  .repo-list li{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem .75rem;
                padding:.48rem 0;border-bottom:1px solid var(--line)}
  .repo-list li:last-child{border-bottom:0}
  .repo-list code{word-break:break-all;font-size:.8rem}
  .repo-form{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}
+ .apk-divider{border-top:1px solid var(--line);margin-top:.95rem;padding-top:.85rem}
+ .apk-form{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between}
+ .apk-form input[type=file]{font:inherit;font-size:.825rem;color:var(--muted);max-width:20rem}
 </style>
 <body><div class="wrap">
 ` + navHeader + `
@@ -1008,6 +1020,9 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
         </select>
         <button class="btn sm" type="submit">Go</button>
       </form>
+      {{if and (not .GlobalMode) .SelectedSource}}
+      <a class="btn sm" href="/source/{{.SelectedSource.ID}}/settings">Source Settings</a>
+      {{end}}
       <div class="seg">
         {{if not .GlobalMode}}
         <a href="/browse?tab=sources&source={{.SourceID}}&type=POPULAR"{{if eq .BrowseType "POPULAR"}} class="active"{{end}}>Popular</a>
@@ -1122,10 +1137,19 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
       <input class="repo-input" name="repoUrl" type="url" required placeholder="https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json" aria-label="Extension repository URL">
       <button class="btn sm primary" type="submit">Add repo</button>
     </form>
+    <div class="apk-divider">
+      <form class="apk-form" method="post" action="/browse/extensions/install-apk" enctype="multipart/form-data">
+        <span class="hint">Install external extension <code>.apk</code></span>
+        <div style="display:flex;flex-wrap:wrap;gap:.45rem;align-items:center">
+          <input type="file" name="file" accept=".apk" required aria-label="Extension APK file">
+          <button class="btn sm" type="submit">Upload APK</button>
+        </div>
+      </form>
+    </div>
   </section>
 
   <div class="toolbar">
-    <div class="search-bar">
+    <div class="search-bar" style="max-width:34rem">
       <input id="extFilter" type="search" value="{{.ExtQuery}}" placeholder="Filter extensions by name or package..." aria-label="Filter extensions">
       <select id="extLangFilter" class="lang-select" aria-label="Filter by language">
         <option value="">All languages</option>
@@ -1133,9 +1157,53 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
         <option value="{{.}}"{{if eq . $.ExtLang}} selected{{end}}>{{.}}</option>
         {{end}}
       </select>
+      <label class="nsfw-toggle"><input type="checkbox" id="extNsfwToggle"> Show 18+</label>
     </div>
     <span class="hint">Instant filter across installed &amp; available extensions</span>
   </div>
+
+  {{if .UpdateExts}}
+  <section class="card-table">
+    <header>
+      <h2>Updates available <span class="pill" id="updCount">{{len .UpdateExts}}</span></h2>
+      <form method="post" action="/browse/extensions" style="margin:0">
+        <input type="hidden" name="action" value="update-all">
+        <button class="btn sm primary" type="submit">Update All</button>
+      </form>
+    </header>
+    <table>
+      <thead><tr><th>Extension</th><th>Lang</th><th class="size">Version</th><th></th></tr></thead>
+      <tbody>
+        {{range .UpdateExts}}
+        <tr class="ext-row" data-group="upd" data-name="{{.Name}}" data-lang="{{.Lang}}" data-pkg="{{.PkgName}}" data-nsfw="{{if .IsNsfw}}true{{else}}false{{end}}">
+          <td>
+            <span class="ext-name">
+              {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{else}}<span class="ext-icon-fallback">{{.Initial}}</span>{{end}}
+              {{.Name}}
+            </span>
+            {{if .IsNsfw}} <span class="tag bad">18+</span>{{end}}
+            {{if .IsObsolete}} <span class="tag warn">obsolete</span>{{end}}
+          </td>
+          <td><span class="tag muted">{{.Lang}}</span></td>
+          <td class="size">{{.VersionName}}</td>
+          <td class="state">
+            <form class="inline" method="post" action="/browse/extensions">
+              <input type="hidden" name="action" value="update">
+              <input type="hidden" name="pkgName" value="{{.PkgName}}">
+              <button class="btn sm primary" type="submit">Update</button>
+            </form>
+            <form class="inline" method="post" action="/browse/extensions" data-confirm="Uninstall {{.Name}}?">
+              <input type="hidden" name="action" value="uninstall">
+              <input type="hidden" name="pkgName" value="{{.PkgName}}">
+              <button class="btn ghost" type="submit">Uninstall</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
 
   <section class="card-table">
     <header>
@@ -1147,25 +1215,18 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
       <thead><tr><th>Extension</th><th>Lang</th><th class="size">Version</th><th></th></tr></thead>
       <tbody>
         {{range .InstalledExts}}
-        <tr class="ext-row" data-group="inst" data-name="{{.Name}}" data-lang="{{.Lang}}" data-pkg="{{.PkgName}}">
+        <tr class="ext-row" data-group="inst" data-name="{{.Name}}" data-lang="{{.Lang}}" data-pkg="{{.PkgName}}" data-nsfw="{{if .IsNsfw}}true{{else}}false{{end}}">
           <td>
             <span class="ext-name">
-              {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{end}}
+              {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{else}}<span class="ext-icon-fallback">{{.Initial}}</span>{{end}}
               {{.Name}}
             </span>
-            {{if .IsNsfw}} <span class="tag muted">18+</span>{{end}}
-            {{if .IsObsolete}} <span class="tag muted">obsolete</span>{{end}}
+            {{if .IsNsfw}} <span class="tag bad">18+</span>{{end}}
+            {{if .IsObsolete}} <span class="tag warn">obsolete</span>{{end}}
           </td>
           <td><span class="tag muted">{{.Lang}}</span></td>
           <td class="size">{{.VersionName}}</td>
           <td class="state">
-            {{if .HasUpdate}}
-            <form class="inline" method="post" action="/browse/extensions">
-              <input type="hidden" name="action" value="update">
-              <input type="hidden" name="pkgName" value="{{.PkgName}}">
-              <button class="btn sm primary" type="submit">Update</button>
-            </form>
-            {{end}}
             <form class="inline" method="post" action="/browse/extensions" data-confirm="Uninstall {{.Name}}?">
               <input type="hidden" name="action" value="uninstall">
               <input type="hidden" name="pkgName" value="{{.PkgName}}">
@@ -1191,13 +1252,14 @@ var browseTmpl = template.Must(template.New("browse").Parse(`<!doctype html>
       <thead><tr><th>Extension</th><th>Lang</th><th class="size">Version</th><th></th></tr></thead>
       <tbody>
         {{range .AvailableExts}}
-        <tr class="ext-row" data-group="avail" data-name="{{.Name}}" data-lang="{{.Lang}}" data-pkg="{{.PkgName}}">
+        <tr class="ext-row" data-group="avail" data-name="{{.Name}}" data-lang="{{.Lang}}" data-pkg="{{.PkgName}}" data-nsfw="{{if .IsNsfw}}true{{else}}false{{end}}">
           <td>
             <span class="ext-name">
-              {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{end}}
+              {{if .IconURL}}<img class="ext-icon" src="{{.IconURL}}" alt="" loading="lazy">{{else}}<span class="ext-icon-fallback">{{.Initial}}</span>{{end}}
               {{.Name}}
             </span>
-            {{if .IsNsfw}} <span class="tag muted">18+</span>{{end}}
+            {{if .IsNsfw}} <span class="tag bad">18+</span>{{end}}
+            {{if .IsObsolete}} <span class="tag warn">obsolete</span>{{end}}
           </td>
           <td><span class="tag muted">{{.Lang}}</span></td>
           <td class="size">{{.VersionName}}</td>
@@ -1227,29 +1289,43 @@ for (const f of document.querySelectorAll("form[data-confirm]"))
 (function(){
   const qEl = document.getElementById("extFilter");
   const lEl = document.getElementById("extLangFilter");
-  if (!qEl && !lEl) return;
+  const nsfwEl = document.getElementById("extNsfwToggle");
+  if (!qEl && !lEl && !nsfwEl) return;
   const rows = Array.from(document.querySelectorAll(".ext-row"));
+  const updCount = document.getElementById("updCount");
   const instCount = document.getElementById("instCount");
   const availCount = document.getElementById("availCount");
+  try {
+    if (nsfwEl && localStorage.getItem("yata_ext_show_nsfw") === "1") nsfwEl.checked = true;
+  } catch (e) {}
   function applyFilter() {
     const q = qEl ? qEl.value.trim().toLowerCase() : "";
     const lang = lEl ? lEl.value.trim().toLowerCase() : "";
-    let instN = 0, availN = 0;
+    const showNsfw = nsfwEl ? nsfwEl.checked : true;
+    let updN = 0, instN = 0, availN = 0;
     rows.forEach(r => {
       const rl = (r.dataset.lang || "").toLowerCase();
       const hay = ((r.dataset.name || "") + " " + rl + " " + (r.dataset.pkg || "")).toLowerCase();
-      const ok = (!q || hay.includes(q)) && (!lang || rl === lang);
+      const nsfwOk = showNsfw || r.dataset.nsfw !== "true";
+      const ok = nsfwOk && (!q || hay.includes(q)) && (!lang || rl === lang);
       r.classList.toggle("hidden", !ok);
       if (ok) {
-        if (r.dataset.group === "inst") instN++;
+        if (r.dataset.group === "upd") updN++;
+        else if (r.dataset.group === "inst") instN++;
         else availN++;
       }
     });
+    if (updCount) updCount.textContent = String(updN);
     if (instCount) instCount.textContent = String(instN);
     if (availCount) availCount.textContent = String(availN);
   }
   if (qEl) qEl.addEventListener("input", applyFilter);
   if (lEl) lEl.addEventListener("change", applyFilter);
+  if (nsfwEl) nsfwEl.addEventListener("change", () => {
+    try { localStorage.setItem("yata_ext_show_nsfw", nsfwEl.checked ? "1" : "0"); } catch (e) {}
+    applyFilter();
+  });
+  applyFilter();
 })();
 </script>
 `))
@@ -1269,6 +1345,11 @@ var mangaTmpl = template.Must(template.New("manga").Parse(`<!doctype html>
  .tags{display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.8rem}
  .desc{font-size:.9rem;color:var(--ink);line-height:1.55;margin:0 0 1rem;white-space:pre-line}
  .hero-actions{display:flex;flex-wrap:wrap;gap:.55rem;align-items:center}
+ .cat-editor{display:flex;flex-wrap:wrap;gap:.55rem .85rem;align-items:center}
+ .cat-check{display:inline-flex;align-items:center;gap:.35rem;padding:.28rem .6rem;border-radius:999px;
+            border:1px solid var(--line);background:var(--bg);font-size:.825rem;cursor:pointer;user-select:none}
+ .cat-check input{accent-color:var(--accent-solid);margin:0}
+ .cat-check:hover{border-color:var(--muted)}
  .ch-link{color:var(--ink);text-decoration:none;font-weight:530}
  .ch-link:hover{color:var(--accent)}
  .ch-read .ch-link{color:var(--muted);font-weight:450}
@@ -1310,12 +1391,31 @@ var mangaTmpl = template.Must(template.New("manga").Parse(`<!doctype html>
       <form method="post" action="/manga/{{.Manga.ID}}/refresh">
         <button class="btn" type="submit">Refresh Chapters</button>
       </form>
+      <a class="btn" href="/manga/{{.Manga.ID}}/migrate">Migrate</a>
       {{if .Manga.SourceID}}
       <a class="btn ghost" href="/browse?tab=sources&source={{.Manga.SourceID}}">← Back to source</a>
       {{end}}
     </div>
   </div>
 </section>
+
+{{if .CategoryChoices}}
+<section class="panel">
+  <div class="panel-head">
+    <h2>Categories</h2>
+    <a class="btn ghost" href="/categories">Manage categories</a>
+  </div>
+  <form class="cat-editor" method="post" action="/manga/{{.Manga.ID}}/categories">
+    {{range .CategoryChoices}}
+    <label class="cat-check">
+      <input type="checkbox" name="categoryIds" value="{{.ID}}"{{if .Checked}} checked{{end}}>
+      <span>{{.Name}}</span>
+    </label>
+    {{end}}
+    <button class="btn sm primary" type="submit">Save Categories</button>
+  </form>
+</section>
+{{end}}
 
 <section class="card-table">
   <header>
@@ -2024,3 +2124,341 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
 })();
 </script>
 `))
+
+var sourceSettingsTmpl = template.Must(template.New("sourceSettings").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.DisplayName}} settings — Yatagarasu</title>` + baseHead + `
+<style>
+ .pref-head{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem}
+ .pref-list{display:flex;flex-direction:column;gap:.85rem}
+ .pref-item{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1rem 1.2rem}
+ .pref-item h3{font-size:.96rem;margin-bottom:.2rem}
+ .pref-sum{margin:0 0 .7rem;color:var(--muted);font-size:.825rem}
+ .pref-row{display:flex;flex-wrap:wrap;gap:.55rem;align-items:center}
+ .pref-row input[type=text],.pref-row select{padding:.44rem .68rem;font:inherit;font-size:.875rem;color:var(--ink);
+   background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);min-width:14rem;flex:1;max-width:26rem}
+ .pref-checks{display:flex;flex-wrap:wrap;gap:.45rem .7rem;margin-bottom:.65rem}
+ .pref-check{display:inline-flex;align-items:center;gap:.35rem;padding:.26rem .6rem;border-radius:999px;
+             border:1px solid var(--line);background:var(--bg);font-size:.825rem;cursor:pointer}
+ .pref-check input{accent-color:var(--accent-solid);margin:0}
+</style>
+<body><div class="wrap narrow">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+<div class="pref-head">
+  <div>
+    <h1>{{.DisplayName}}</h1>
+    <p class="hint" style="margin:.15rem 0 0;color:var(--muted);font-size:.84rem">Source preferences</p>
+  </div>
+  <a class="btn sm" href="/browse?tab=sources&source={{.SourceID}}">← Back to source</a>
+</div>
+
+{{if .Preferences}}
+<div class="pref-list">
+  {{range .Preferences}}
+  <section class="pref-item">
+    <h3>{{if .Title}}{{.Title}}{{else}}Preference #{{.Position}}{{end}}</h3>
+    {{if .Summary}}<p class="pref-sum">{{.Summary}}</p>{{end}}
+    <form method="post" action="/source/{{$.SourceID}}/settings">
+      <input type="hidden" name="position" value="{{.Position}}">
+      <input type="hidden" name="type" value="{{.Type}}">
+      {{if or (eq .Type "CheckBoxPreference") (eq .Type "SwitchPreference")}}
+      <div class="pref-row">
+        <label class="pref-check">
+          <input type="checkbox" name="value" value="true"{{if .CurrentBool}} checked{{end}}>
+          <span>{{if .CurrentBool}}Enabled{{else}}Disabled{{end}}</span>
+        </label>
+        <button class="btn sm primary" type="submit">Save</button>
+      </div>
+      {{else if eq .Type "ListPreference"}}
+      <div class="pref-row">
+        <select name="value" aria-label="{{.Title}}">
+          {{range .Options}}
+          <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+          {{end}}
+        </select>
+        <button class="btn sm primary" type="submit">Save</button>
+      </div>
+      {{else if eq .Type "MultiSelectListPreference"}}
+      <div class="pref-checks">
+        {{range .Options}}
+        <label class="pref-check">
+          <input type="checkbox" name="values" value="{{.Value}}"{{if .Selected}} checked{{end}}>
+          <span>{{.Label}}</span>
+        </label>
+        {{end}}
+      </div>
+      <button class="btn sm primary" type="submit">Save</button>
+      {{else if eq .Type "EditTextPreference"}}
+      <div class="pref-row">
+        <input type="text" name="value" value="{{.CurrentStr}}" aria-label="{{.Title}}">
+        <button class="btn sm primary" type="submit">Save</button>
+      </div>
+      {{else}}
+      <p class="hint">Unsupported preference type: <code>{{.Type}}</code></p>
+      {{end}}
+    </form>
+  </section>
+  {{end}}
+</div>
+{{else}}
+<section class="empty">
+  <h2>No configurable preferences</h2>
+  <p>This source does not expose any settings.</p>
+</section>
+{{end}}
+
+</div>
+`))
+
+var categoriesTmpl = template.Must(template.New("categories").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Categories — Yatagarasu</title>` + baseHead + `
+<style>
+ .cat-head{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem}
+ .cat-create{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+ .cat-create input,.cat-rename input{padding:.42rem .68rem;font:inherit;font-size:.875rem;color:var(--ink);
+   background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);flex:1;min-width:11rem}
+ .cat-rename{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center;width:100%;max-width:24rem}
+</style>
+<body><div class="wrap narrow">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+<div class="cat-head">
+  <h1>Categories</h1>
+  <a class="btn sm" href="/library">← Back to library</a>
+</div>
+
+{{if not .Configured}}
+<section class="empty">
+  <h2>Suwayomi-Server is not connected</h2>
+  <p>Configure your Suwayomi-Server URL in <a href="/settings#suwayomi">Settings</a> to manage library categories.</p>
+</section>
+{{else}}
+<section class="panel">
+  <div class="panel-head"><h2>New category</h2></div>
+  <form class="cat-create" method="post" action="/categories">
+    <input type="hidden" name="action" value="create">
+    <input name="name" type="text" required placeholder="Category name (e.g. Reading, Seinen, Favorites)..." aria-label="Category name">
+    <button class="btn sm primary" type="submit">Create</button>
+  </form>
+</section>
+
+<section class="card-table">
+  <header>
+    <h2>Library categories</h2>
+    <p>{{len .Categories}} {{if eq (len .Categories) 1}}category{{else}}categories{{end}}</p>
+  </header>
+  {{if .Categories}}
+  <table>
+    <thead><tr><th>Name</th><th class="size">Manga</th><th></th></tr></thead>
+    <tbody>
+      {{range .Categories}}
+      <tr>
+        <td>
+          <form class="cat-rename" method="post" action="/categories">
+            <input type="hidden" name="action" value="rename">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <input name="name" type="text" value="{{.Name}}" required aria-label="Rename {{.Name}}">
+            <button class="btn sm" type="submit">Rename</button>
+          </form>
+        </td>
+        <td class="size"><span class="pill">{{.MangaCount}}</span></td>
+        <td class="state">
+          <form class="inline" method="post" action="/categories" data-confirm="Delete category {{.Name}}?">
+            <input type="hidden" name="action" value="delete">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <button class="btn ghost" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="hint" style="padding:1rem 1.25rem">No custom categories yet. Create one above to organize your library.</p>
+  {{end}}
+</section>
+{{end}}
+
+</div>
+<script nonce="{{.Nonce}}">
+for (const f of document.querySelectorAll("form[data-confirm]"))
+  f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+</script>
+`))
+
+var updatesTmpl = template.Must(template.New("updates").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Updates — Yatagarasu</title>` + baseHead + `
+<style>
+ .upd-head{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;justify-content:space-between;margin-bottom:1.15rem}
+ .upd-manga{display:inline-flex;align-items:center;gap:.65rem;text-decoration:none;color:var(--ink)}
+ .upd-manga:hover .upd-title{color:var(--accent)}
+ .upd-cover{width:34px;height:48px;border-radius:.3rem;object-fit:cover;background:var(--raise);border:1px solid var(--line);flex-shrink:0}
+ .upd-cover-ph{width:34px;height:48px;border-radius:.3rem;background:var(--raise);border:1px solid var(--line);flex-shrink:0}
+ .upd-title{font-weight:580;display:block;line-height:1.25}
+ .upd-ch{display:block;font-size:.82rem;color:var(--muted)}
+ .upd-read .upd-title,.upd-read .upd-ch{opacity:.65}
+</style>
+<body><div class="wrap">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+{{if not .Configured}}
+<section class="empty">
+  <h2>Suwayomi-Server is not connected</h2>
+  <p>Configure your Suwayomi-Server URL in <a href="/settings#suwayomi">Settings</a> to see recent chapter updates across your library.</p>
+</section>
+{{else}}
+<div class="upd-head">
+  <div>
+    <h1>Recent Updates <span class="pill">{{.Total}}</span></h1>
+  </div>
+  <form method="post" action="/downloads/control" style="margin:0">
+    <input type="hidden" name="action" value="update-library">
+    <input type="hidden" name="redirect" value="/updates">
+    <button class="btn sm primary" type="submit">Update Library</button>
+  </form>
+</div>
+
+{{if .Groups}}
+  {{range .Groups}}
+  <section class="card-table">
+    <header>
+      <h2>{{.Label}}</h2>
+      <p>{{len .Items}} {{if eq (len .Items) 1}}chapter{{else}}chapters{{end}}</p>
+    </header>
+    <table>
+      <tbody>
+        {{range .Items}}
+        <tr{{if .IsRead}} class="upd-read"{{end}}>
+          <td>
+            <a class="upd-manga" href="/manga/{{.MangaID}}">
+              {{if .ThumbnailURL}}<img class="upd-cover" src="{{.ThumbnailURL}}" alt="" loading="lazy">{{else}}<span class="upd-cover-ph"></span>{{end}}
+              <span>
+                <span class="upd-title">{{.MangaTitle}}</span>
+                <span class="upd-ch">{{.Name}}{{if .Scanlator}} · {{.Scanlator}}{{end}}</span>
+              </span>
+            </a>
+          </td>
+          <td class="when">{{.When}}</td>
+          <td class="state">
+            <a class="btn sm primary" href="/read/{{.ID}}">Read</a>
+            {{if .IsDownloaded}}
+            <span class="tag">saved</span>
+            {{else}}
+            <form class="inline" method="post" action="/manga/{{.MangaID}}/chapter/{{.ID}}">
+              <input type="hidden" name="action" value="download">
+              <input type="hidden" name="redirect" value="/updates">
+              <button class="btn sm" type="submit">Download</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+{{else}}
+<section class="empty">
+  <h2>No recent updates yet</h2>
+  <p>Click <strong>Update Library</strong> above to check installed sources for new chapters.</p>
+</section>
+{{end}}
+{{end}}
+
+</div>
+`))
+
+var migrateTmpl = template.Must(template.New("migrate").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Migrate {{.Manga.Title}} — Yatagarasu</title>` + baseHead + `
+<style>
+ .mig-banner{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between;
+             background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1rem 1.2rem;margin-bottom:1.25rem}
+ .mig-src{display:flex;align-items:center;gap:.85rem}
+ .mig-thumb{width:46px;height:66px;border-radius:.35rem;object-fit:cover;background:var(--raise);border:1px solid var(--line)}
+ .mig-search{display:flex;gap:.45rem;align-items:center;flex:1;min-width:14rem;max-width:24rem}
+ .mig-search input{flex:1;padding:.42rem .68rem;font:inherit;font-size:.875rem;color:var(--ink);
+   background:var(--bg);border:1px solid var(--line);border-radius:var(--radius)}
+ .mig-group{margin-bottom:1.5rem}
+ .mig-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:.75rem;
+           padding-bottom:.45rem;border-bottom:1px solid var(--line)}
+ .mig-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(10rem,1fr));gap:1rem .85rem}
+ .mig-card{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);
+           border-radius:var(--radius);padding:.6rem;gap:.45rem}
+ .mig-cover{aspect-ratio:2/3;border-radius:.35rem;overflow:hidden;background:var(--raise);border:1px solid var(--line)}
+ .mig-cover img{width:100%;height:100%;object-fit:cover;display:block}
+ .mig-title{font-size:.84rem;font-weight:560;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+</style>
+<body><div class="wrap">
+` + navHeader + `
+
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+<section class="mig-banner">
+  <div class="mig-src">
+    {{if .Manga.ThumbnailURL}}<img class="mig-thumb" src="{{.Manga.ThumbnailURL}}" alt="">{{end}}
+    <div>
+      <h1>Migrate “{{.Manga.Title}}”</h1>
+      <p class="hint" style="margin:.15rem 0 0;color:var(--muted);font-size:.825rem">
+        From {{if .Manga.SourceName}}{{.Manga.SourceName}}{{else}}current source{{end}} · Copies read chapters &amp; categories to the new source
+      </p>
+    </div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+    <form class="mig-search" method="get" action="/manga/{{.Manga.ID}}/migrate">
+      <input name="q" value="{{.Query}}" placeholder="Search title across sources..." aria-label="Search migration title">
+      <button class="btn sm" type="submit">Search</button>
+    </form>
+    <a class="btn sm ghost" href="/manga/{{.Manga.ID}}">← Cancel</a>
+  </div>
+</section>
+
+{{if .Groups}}
+  {{range .Groups}}
+  <section class="mig-group">
+    <div class="mig-head">
+      <h2>{{.Source.Name}} <span class="tag muted">{{.Source.Lang}}</span></h2>
+    </div>
+    <div class="mig-grid">
+      {{range .Mangas}}
+      <div class="mig-card">
+        <a class="mig-cover" href="/manga/{{.ID}}">
+          {{if .ThumbnailURL}}<img src="{{.ThumbnailURL}}" alt="{{.Title}}" loading="lazy">{{end}}
+        </a>
+        <span class="mig-title">{{.Title}}</span>
+        <form method="post" action="/manga/{{$.Manga.ID}}/migrate" data-confirm="Migrate {{$.Manga.Title}} to {{.Title}}? This will copy read progress and remove the old entry from your library.">
+          <input type="hidden" name="targetMangaId" value="{{.ID}}">
+          <button class="btn sm primary" style="width:100%;justify-content:center" type="submit">Migrate here</button>
+        </form>
+      </div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+{{else}}
+<section class="empty">
+  <h2>No migration candidates found for “{{.Query}}”</h2>
+  <p>Try searching with an alternate title above or install additional extensions.</p>
+</section>
+{{end}}
+
+</div>
+<script nonce="{{.Nonce}}">
+for (const f of document.querySelectorAll("form[data-confirm]"))
+  f.addEventListener("submit", e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+</script>
+`))
+

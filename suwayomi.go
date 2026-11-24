@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"sort"
@@ -512,6 +513,7 @@ func (c *suwayomiClient) browseSource(ctx context.Context, sourceID, browseType,
 type SuwayomiExtension struct {
 	PkgName     string `json:"pkgName"`
 	Name        string `json:"name"`
+	Initial     string `json:"-"`
 	Lang        string `json:"lang"`
 	VersionName string `json:"versionName"`
 	VersionCode int    `json:"versionCode"`
@@ -550,6 +552,7 @@ func (c *suwayomiClient) listExtensions(ctx context.Context) ([]SuwayomiExtensio
 	out := data.Extensions.Nodes
 	for i := range out {
 		out[i].IconURL = suwayomiImageURL(out[i].IconURL)
+		out[i].Initial = titleInitial(out[i].Name)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].HasUpdate != out[j].HasUpdate {
@@ -625,6 +628,7 @@ type SuwayomiMangaDetail struct {
 	SourceName   string            `json:"sourceName"`
 	SourceLang   string            `json:"sourceLang"`
 	Categories   []string          `json:"categories"`
+	CategoryIDs  []int             `json:"categoryIds"`
 	Chapters     []SuwayomiChapter `json:"chapters"`
 }
 
@@ -648,6 +652,7 @@ func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*Suwayomi
 			} `json:"source"`
 			Categories struct {
 				Nodes []struct {
+					ID   int    `json:"id"`
 					Name string `json:"name"`
 				} `json:"nodes"`
 			} `json:"categories"`
@@ -669,7 +674,7 @@ func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*Suwayomi
 			inLibrary
 			sourceId
 			source { id name lang }
-			categories { nodes { name } }
+			categories { nodes { id name } }
 			chapters {
 				nodes {
 					id
@@ -714,6 +719,9 @@ func (c *suwayomiClient) getManga(ctx context.Context, mangaID int64) (*Suwayomi
 	for _, cat := range m.Categories.Nodes {
 		if !strings.EqualFold(cat.Name, "Default") {
 			detail.Categories = append(detail.Categories, cat.Name)
+			if cat.ID > 0 {
+				detail.CategoryIDs = append(detail.CategoryIDs, cat.ID)
+			}
 		}
 	}
 	// Newest / highest chapter number first on the details page.
@@ -1195,4 +1203,395 @@ func (c *suwayomiClient) setExtensionRepos(ctx context.Context, repos []string) 
 		return nil, err
 	}
 	return data.SetSettings.Settings.ExtensionRepos, nil
+}
+
+// installExternalExtension streams an external .apk to Suwayomi's native REST
+// endpoint POST /api/v1/extension/install as multipart field "file".
+func (c *suwayomiClient) installExternalExtension(ctx context.Context, filename string, r io.Reader) error {
+	if strings.TrimSpace(filename) == "" {
+		filename = "extension.apk"
+	}
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		part, err := mw.CreateFormFile("file", filename)
+		if err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		if _, err := io.Copy(part, r); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		if err := mw.Close(); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/extension/install", pr)
+	if err != nil {
+		_ = pr.Close()
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	c.addAuth(req)
+
+	client := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		if trimmed := strings.TrimSpace(string(msg)); trimmed != "" {
+			return fmt.Errorf("suwayomi apk install http %d: %s", resp.StatusCode, trimmed)
+		}
+		return fmt.Errorf("suwayomi apk install http %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// ---- Source Preferences -----------------------------------------------------
+
+type SuwayomiSourcePreference struct {
+	Position     int
+	Type         string
+	Title        string
+	Summary      string
+	CurrentBool  bool
+	CurrentStr   string
+	CurrentMulti []string
+	Entries      []string
+	EntryValues  []string
+}
+
+type SuwayomiSourcePreferences struct {
+	SourceID    string
+	DisplayName string
+	Preferences []SuwayomiSourcePreference
+}
+
+func (c *suwayomiClient) getSourcePreferences(ctx context.Context, sourceID string) (*SuwayomiSourcePreferences, error) {
+	var data struct {
+		Source struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"displayName"`
+			Preferences []struct {
+				TypeName                             string   `json:"__typename"`
+				Title                                string   `json:"title"`
+				Summary                              string   `json:"summary"`
+				CheckBoxPreferenceTitle              string   `json:"CheckBoxPreferenceTitle"`
+				CheckBoxPreferenceCurrentValue       bool     `json:"CheckBoxPreferenceCurrentValue"`
+				SwitchPreferenceTitle                string   `json:"SwitchPreferenceTitle"`
+				SwitchPreferenceCurrentValue         bool     `json:"SwitchPreferenceCurrentValue"`
+				ListPreferenceTitle                  string   `json:"ListPreferenceTitle"`
+				ListPreferenceCurrentValue           string   `json:"ListPreferenceCurrentValue"`
+				MultiSelectListPreferenceTitle       string   `json:"MultiSelectListPreferenceTitle"`
+				MultiSelectListPreferenceCurrentValue []string `json:"MultiSelectListPreferenceCurrentValue"`
+				EditTextPreferenceTitle              string   `json:"EditTextPreferenceTitle"`
+				EditTextPreferenceCurrentValue       string   `json:"EditTextPreferenceCurrentValue"`
+				Entries                              []string `json:"entries"`
+				EntryValues                          []string `json:"entryValues"`
+			} `json:"preferences"`
+		} `json:"source"`
+	}
+	q := `query GetSourcePreferences($id: LongString!) {
+		source(id: $id) {
+			id
+			displayName
+			preferences {
+				__typename
+				... on CheckBoxPreference { CheckBoxPreferenceTitle title summary CheckBoxPreferenceCurrentValue }
+				... on SwitchPreference { SwitchPreferenceTitle title summary SwitchPreferenceCurrentValue }
+				... on ListPreference { ListPreferenceTitle title summary entries entryValues ListPreferenceCurrentValue }
+				... on MultiSelectListPreference { MultiSelectListPreferenceTitle title summary entries entryValues MultiSelectListPreferenceCurrentValue }
+				... on EditTextPreference { EditTextPreferenceTitle title summary EditTextPreferenceCurrentValue }
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{"id": sourceID}, &data); err != nil {
+		return nil, err
+	}
+	if data.Source.ID == "" {
+		return nil, errors.New("source not found")
+	}
+	out := &SuwayomiSourcePreferences{
+		SourceID:    data.Source.ID,
+		DisplayName: data.Source.DisplayName,
+		Preferences: make([]SuwayomiSourcePreference, 0, len(data.Source.Preferences)),
+	}
+	for i, p := range data.Source.Preferences {
+		pref := SuwayomiSourcePreference{
+			Position:    i,
+			Type:        p.TypeName,
+			Title:       p.Title,
+			Summary:     p.Summary,
+			Entries:     p.Entries,
+			EntryValues: p.EntryValues,
+		}
+		switch p.TypeName {
+		case "CheckBoxPreference":
+			if p.CheckBoxPreferenceTitle != "" {
+				pref.Title = p.CheckBoxPreferenceTitle
+			}
+			pref.CurrentBool = p.CheckBoxPreferenceCurrentValue
+		case "SwitchPreference":
+			if p.SwitchPreferenceTitle != "" {
+				pref.Title = p.SwitchPreferenceTitle
+			}
+			pref.CurrentBool = p.SwitchPreferenceCurrentValue
+		case "ListPreference":
+			if p.ListPreferenceTitle != "" {
+				pref.Title = p.ListPreferenceTitle
+			}
+			pref.CurrentStr = p.ListPreferenceCurrentValue
+		case "MultiSelectListPreference":
+			if p.MultiSelectListPreferenceTitle != "" {
+				pref.Title = p.MultiSelectListPreferenceTitle
+			}
+			pref.CurrentMulti = p.MultiSelectListPreferenceCurrentValue
+		case "EditTextPreference":
+			if p.EditTextPreferenceTitle != "" {
+				pref.Title = p.EditTextPreferenceTitle
+			}
+			pref.CurrentStr = p.EditTextPreferenceCurrentValue
+		}
+		out.Preferences = append(out.Preferences, pref)
+	}
+	return out, nil
+}
+
+func (c *suwayomiClient) updateSourcePreference(ctx context.Context, sourceID string, position int, change map[string]any) error {
+	mut := `mutation UpdateSourcePreference($source: LongString!, $position: Int!, $change: PreferenceChangeInput!) {
+		updateSourcePreference(input: { source: $source, position: $position, change: $change }) {
+			source { id }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{
+		"source":   sourceID,
+		"position": position,
+		"change":   change,
+	}, nil)
+}
+
+// ---- Categories CRUD --------------------------------------------------------
+
+type SuwayomiCategory struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Order      int    `json:"order"`
+	Default    bool   `json:"default"`
+	MangaCount int    `json:"mangaCount"`
+}
+
+func (c *suwayomiClient) listCategories(ctx context.Context) ([]SuwayomiCategory, error) {
+	var data struct {
+		Categories struct {
+			Nodes []struct {
+				ID      int    `json:"id"`
+				Name    string `json:"name"`
+				Order   int    `json:"order"`
+				Default bool   `json:"default"`
+				Mangas  struct {
+					TotalCount int `json:"totalCount"`
+				} `json:"mangas"`
+			} `json:"nodes"`
+		} `json:"categories"`
+	}
+	q := `query ListCategories {
+		categories {
+			nodes {
+				id
+				name
+				order
+				default
+				mangas { totalCount }
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	out := make([]SuwayomiCategory, 0, len(data.Categories.Nodes))
+	for _, n := range data.Categories.Nodes {
+		out = append(out, SuwayomiCategory{
+			ID:         n.ID,
+			Name:       n.Name,
+			Order:      n.Order,
+			Default:    n.Default,
+			MangaCount: n.Mangas.TotalCount,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Order != out[j].Order {
+			return out[i].Order < out[j].Order
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (c *suwayomiClient) createCategory(ctx context.Context, name string) (*SuwayomiCategory, error) {
+	var data struct {
+		CreateCategory struct {
+			Category SuwayomiCategory `json:"category"`
+		} `json:"createCategory"`
+	}
+	mut := `mutation CreateCategory($name: String!) {
+		createCategory(input: { name: $name }) {
+			category { id name order default }
+		}
+	}`
+	if err := c.graphql(ctx, mut, map[string]any{"name": name}, &data); err != nil {
+		return nil, err
+	}
+	return &data.CreateCategory.Category, nil
+}
+
+func (c *suwayomiClient) updateCategory(ctx context.Context, id int, name string) error {
+	mut := `mutation UpdateCategory($id: Int!, $name: String!) {
+		updateCategory(input: { id: $id, patch: { name: $name } }) {
+			category { id name }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"id": id, "name": name}, nil)
+}
+
+func (c *suwayomiClient) deleteCategory(ctx context.Context, id int) error {
+	mut := `mutation DeleteCategory($id: Int!) {
+		deleteCategory(input: { categoryId: $id }) {
+			category { id }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"id": id}, nil)
+}
+
+func (c *suwayomiClient) updateMangaCategories(ctx context.Context, mangaID int64, addTo, removeFrom []int) error {
+	patch := map[string]any{}
+	if len(addTo) > 0 {
+		patch["addToCategories"] = addTo
+	}
+	if len(removeFrom) > 0 {
+		patch["removeFromCategories"] = removeFrom
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	mut := `mutation UpdateMangaCategories($id: Int!, $patch: UpdateMangaCategoriesPatchInput!) {
+		updateMangaCategories(input: { id: $id, patch: $patch }) {
+			manga { id }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{
+		"id":    mangaID,
+		"patch": patch,
+	}, nil)
+}
+
+// ---- Recent Updates Feed ----------------------------------------------------
+
+type SuwayomiUpdateChapter struct {
+	ID            int64
+	Name          string
+	ChapterNumber float64
+	Scanlator     string
+	FetchedAt     int64
+	UploadDate    int64
+	IsRead        bool
+	IsDownloaded  bool
+	MangaID       int64
+	MangaTitle    string
+	ThumbnailURL  string
+}
+
+func parseSuwayomiUnix(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	if v > 1e12 {
+		v /= 1000
+	}
+	return v
+}
+
+func (c *suwayomiClient) listRecentUpdates(ctx context.Context, limit int) ([]SuwayomiUpdateChapter, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var data struct {
+		Chapters struct {
+			Nodes []struct {
+				ID            int64   `json:"id"`
+				Name          string  `json:"name"`
+				ChapterNumber float64 `json:"chapterNumber"`
+				Scanlator     string  `json:"scanlator"`
+				FetchedAt     string  `json:"fetchedAt"`
+				UploadDate    string  `json:"uploadDate"`
+				IsRead        bool    `json:"isRead"`
+				IsDownloaded  bool    `json:"isDownloaded"`
+				Manga         *struct {
+					ID           int64  `json:"id"`
+					Title        string `json:"title"`
+					ThumbnailURL string `json:"thumbnailUrl"`
+					InLibrary    bool   `json:"inLibrary"`
+				} `json:"manga"`
+			} `json:"nodes"`
+		} `json:"chapters"`
+	}
+	q := `query RecentUpdates($first: Int!) {
+		chapters(
+			condition: { inLibrary: true }
+			orderBy: FETCHED_AT
+			orderByType: DESC
+			first: $first
+		) {
+			nodes {
+				id
+				name
+				chapterNumber
+				scanlator
+				fetchedAt
+				uploadDate
+				isRead
+				isDownloaded
+				manga {
+					id
+					title
+					thumbnailUrl
+					inLibrary
+				}
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{"first": limit}, &data); err != nil {
+		return nil, err
+	}
+	out := make([]SuwayomiUpdateChapter, 0, len(data.Chapters.Nodes))
+	for _, n := range data.Chapters.Nodes {
+		item := SuwayomiUpdateChapter{
+			ID:            n.ID,
+			Name:          n.Name,
+			ChapterNumber: n.ChapterNumber,
+			Scanlator:     n.Scanlator,
+			FetchedAt:     parseSuwayomiUnix(n.FetchedAt),
+			UploadDate:    parseSuwayomiUnix(n.UploadDate),
+			IsRead:        n.IsRead,
+			IsDownloaded:  n.IsDownloaded,
+		}
+		if n.Manga != nil {
+			item.MangaID = n.Manga.ID
+			item.MangaTitle = n.Manga.Title
+			item.ThumbnailURL = suwayomiImageURL(n.Manga.ThumbnailURL)
+		}
+		out = append(out, item)
+	}
+	return out, nil
 }
