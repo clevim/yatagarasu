@@ -177,6 +177,17 @@ const baseHead = favicon + `
  .flash{padding:.7rem 1rem;border-radius:var(--radius);margin-bottom:1.25rem;font-size:.875rem}
  .flash.ok{background:var(--ok-bg);color:var(--ok)}
  .flash.bad{background:var(--bad-bg);color:var(--bad)}
+ .upd-banner{background:var(--surface);border:1px solid var(--accent);border-left:4px solid var(--accent-solid);
+             border-radius:var(--radius);padding:.8rem 1.05rem;margin-bottom:1.15rem}
+ .upd-banner.hidden{display:none}
+ .upd-banner-top{display:flex;flex-wrap:wrap;gap:.55rem 1rem;align-items:center;justify-content:space-between;margin-bottom:.55rem}
+ .upd-banner-title{display:flex;flex-wrap:wrap;align-items:baseline;gap:.45rem .65rem;min-width:0}
+ .upd-banner-title strong{font-size:.88rem;font-weight:620;font-variant-numeric:tabular-nums}
+ .upd-banner-sub{font-size:.8rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34rem}
+ .upd-pulse{width:8px;height:8px;border-radius:50%;background:var(--accent-solid);flex-shrink:0;align-self:center;animation:updpulse 1.4s ease-in-out infinite}
+ @keyframes updpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
+ .upd-banner-track{height:6px;background:var(--accent-soft);border-radius:999px;overflow:hidden}
+ .upd-banner-fill{height:100%;background:var(--accent-solid);border-radius:999px;transition:width 240ms var(--ease)}
  .empty{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.75rem 1.5rem;max-width:42rem}
  .empty h2{margin-bottom:.45rem}
  .empty p{color:var(--muted);margin:.45rem 0 0;font-size:.9rem}
@@ -442,6 +453,24 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 {{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
 {{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
 
+{{if .SuwayomiConnected}}
+<div class="upd-banner{{if not (or .UpdateStatus.IsRunning .UpdatingParam)}} hidden{{end}}" id="libUpdateBanner" data-running="{{if .UpdateStatus.IsRunning}}true{{else}}false{{end}}">
+  <div class="upd-banner-top">
+    <div class="upd-banner-title">
+      <span class="upd-pulse"></span>
+      <strong id="libUpdateText">{{if gt .UpdateStatus.TotalJobs 0}}Updating library: {{.UpdateStatus.FinishedJobs}} / {{.UpdateStatus.TotalJobs}}{{else}}Updating library…{{end}}</strong>
+      <span class="upd-banner-sub" id="libUpdateManga">{{if .UpdateStatus.RunningMangas}}{{range $i, $t := .UpdateStatus.RunningMangas}}{{if $i}}, {{end}}{{$t}}{{end}}{{end}}</span>
+    </div>
+    <form method="post" action="/downloads/control" style="margin:0">
+      <input type="hidden" name="action" value="stop-update">
+      <input type="hidden" name="redirect" value="/library">
+      <button class="btn sm" type="submit">Stop</button>
+    </form>
+  </div>
+  <div class="upd-banner-track"><div class="upd-banner-fill" id="libUpdateBar" style="width:{{.UpdateProgressPct}}%"></div></div>
+</div>
+{{end}}
+
 <div class="lib-bar">
   <div class="lib-bar-title">
     <h1>Library{{if .SelectedCat}} · {{.SelectedCat}}{{end}}</h1>
@@ -597,6 +626,43 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
     const saved = localStorage.getItem("yata_library_view");
     if (saved === "comfy" || saved === "list") setView(saved);
   } catch (e) {}
+
+  const updBanner = document.getElementById("libUpdateBanner");
+  if (updBanner) {
+    const params = new URLSearchParams(window.location.search);
+    if (updBanner.dataset.running === "true" || params.get("updating") === "1") {
+      const txtEl = document.getElementById("libUpdateText");
+      const mangaEl = document.getElementById("libUpdateManga");
+      const barEl = document.getElementById("libUpdateBar");
+      setInterval(() => {
+        fetch("/api/suwayomi/update-status", {headers: {"Accept": "application/json"}})
+          .then(r => r.ok ? r.json() : null)
+          .then(st => {
+            if (!st) return;
+            if (st.isRunning) {
+              updBanner.classList.remove("hidden");
+              if (txtEl) {
+                txtEl.textContent = st.totalJobs > 0
+                  ? ("Updating library: " + st.finishedJobs + " / " + st.totalJobs)
+                  : "Updating library…";
+              }
+              if (mangaEl) {
+                mangaEl.textContent = Array.isArray(st.runningMangas) && st.runningMangas.length > 0
+                  ? st.runningMangas.join(", ")
+                  : "";
+              }
+              if (barEl && st.totalJobs > 0) {
+                const pct = Math.min(100, Math.max(0, Math.round(st.finishedJobs * 100 / st.totalJobs)));
+                barEl.style.width = pct + "%";
+              }
+            } else {
+              window.location.replace(window.location.pathname);
+            }
+          })
+          .catch(() => {});
+      }, 2000);
+    }
+  }
 })();
 </script>
 `))
@@ -762,6 +828,10 @@ var backupsTmpl = template.Must(template.New("backups").Parse(`<!doctype html>
         <td class="size">{{.Size}}</td>
         <td class="when">{{.Created}}</td>
         <td class="state">
+          <form class="inline" method="post" action="/backups/{{.ID}}/restore"
+                data-confirm="Restore {{.Name}} into your Yatagarasu &amp; Suwayomi library?">
+            <button class="btn sm primary" type="submit">Restore to Library</button>
+          </form>
           <a class="btn sm" href="/api/backups/{{.ID}}" download>download</a>
           <form class="inline" method="post" action="/backups/{{.ID}}/delete"
                 data-confirm="Delete backup {{.Name}} permanently?">
@@ -2642,6 +2712,22 @@ var updatesTmpl = template.Must(template.New("updates").Parse(`<!doctype html>
   <p>Configure your Suwayomi-Server URL in <a href="/settings#suwayomi">Settings</a> to see recent chapter updates across your library.</p>
 </section>
 {{else}}
+<div class="upd-banner{{if not (or .UpdateStatus.IsRunning .UpdatingParam)}} hidden{{end}}" id="libUpdateBanner" data-running="{{if .UpdateStatus.IsRunning}}true{{else}}false{{end}}">
+  <div class="upd-banner-top">
+    <div class="upd-banner-title">
+      <span class="upd-pulse"></span>
+      <strong id="libUpdateText">{{if gt .UpdateStatus.TotalJobs 0}}Updating library: {{.UpdateStatus.FinishedJobs}} / {{.UpdateStatus.TotalJobs}}{{else}}Updating library…{{end}}</strong>
+      <span class="upd-banner-sub" id="libUpdateManga">{{if .UpdateStatus.RunningMangas}}{{range $i, $t := .UpdateStatus.RunningMangas}}{{if $i}}, {{end}}{{$t}}{{end}}{{end}}</span>
+    </div>
+    <form method="post" action="/downloads/control" style="margin:0">
+      <input type="hidden" name="action" value="stop-update">
+      <input type="hidden" name="redirect" value="/updates">
+      <button class="btn sm" type="submit">Stop</button>
+    </form>
+  </div>
+  <div class="upd-banner-track"><div class="upd-banner-fill" id="libUpdateBar" style="width:{{.UpdateProgressPct}}%"></div></div>
+</div>
+
 <div class="upd-head">
   <div>
     <h1>Recent Updates <span class="pill">{{.Total}}</span></h1>
@@ -2701,6 +2787,44 @@ var updatesTmpl = template.Must(template.New("updates").Parse(`<!doctype html>
 {{end}}
 
 </div>
+<script nonce="{{.Nonce}}">
+(function(){
+  const updBanner = document.getElementById("libUpdateBanner");
+  if (!updBanner) return;
+  const params = new URLSearchParams(window.location.search);
+  if (updBanner.dataset.running !== "true" && params.get("updating") !== "1") return;
+  const txtEl = document.getElementById("libUpdateText");
+  const mangaEl = document.getElementById("libUpdateManga");
+  const barEl = document.getElementById("libUpdateBar");
+  setInterval(() => {
+    fetch("/api/suwayomi/update-status", {headers: {"Accept": "application/json"}})
+      .then(r => r.ok ? r.json() : null)
+      .then(st => {
+        if (!st) return;
+        if (st.isRunning) {
+          updBanner.classList.remove("hidden");
+          if (txtEl) {
+            txtEl.textContent = st.totalJobs > 0
+              ? ("Updating library: " + st.finishedJobs + " / " + st.totalJobs)
+              : "Updating library…";
+          }
+          if (mangaEl) {
+            mangaEl.textContent = Array.isArray(st.runningMangas) && st.runningMangas.length > 0
+              ? st.runningMangas.join(", ")
+              : "";
+          }
+          if (barEl && st.totalJobs > 0) {
+            const pct = Math.min(100, Math.max(0, Math.round(st.finishedJobs * 100 / st.totalJobs)));
+            barEl.style.width = pct + "%";
+          }
+        } else {
+          window.location.replace(window.location.pathname);
+        }
+      })
+      .catch(() => {});
+  }, 2000);
+})();
+</script>
 `))
 
 var migrateTmpl = template.Must(template.New("migrate").Parse(`<!doctype html>

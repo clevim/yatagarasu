@@ -365,10 +365,12 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 	selectedCat := strings.TrimSpace(r.URL.Query().Get("cat"))
 	problem := r.URL.Query().Get("problem")
 	note := r.URL.Query().Get("note")
+	updatingParam := r.URL.Query().Get("updating") == "1"
 
 	var (
 		suwConnected bool
 		suwLib       *SuwayomiLibraryData
+		updateStatus = &SuwayomiUpdateStatus{}
 	)
 	if suw := s.suwayomi(); suw != nil {
 		suwConnected = true
@@ -376,6 +378,16 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 		suwLib, err = suw.listLibrary(r.Context())
 		if err != nil && problem == "" {
 			problem = "Could not fetch live Suwayomi library: " + err.Error()
+		}
+		if ust, uerr := suw.getLibraryUpdateStatus(r.Context()); uerr == nil && ust != nil {
+			updateStatus = ust
+		}
+	}
+	updatePct := 0
+	if updateStatus.TotalJobs > 0 {
+		updatePct = updateStatus.FinishedJobs * 100 / updateStatus.TotalJobs
+		if updatePct > 100 {
+			updatePct = 100
 		}
 	}
 
@@ -426,16 +438,23 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 		if upd > 1e12 {
 			upd /= 1000
 		}
+		thumb := strings.TrimSpace(m.ThumbnailURL)
+		if strings.HasPrefix(thumb, "/") && !strings.HasPrefix(thumb, "//") {
+			thumb = suwayomiImageURL(thumb)
+		} else if !strings.HasPrefix(thumb, "https://") && !strings.HasPrefix(thumb, "http://") {
+			thumb = ""
+		}
 		row := &libraryMangaRow{
-			Title:       m.Title,
-			Initial:     titleInitial(m.Title),
-			Categories:  append([]string(nil), m.Categories...),
-			UnreadCount: unread,
-			ReadCount:   rc,
-			TotalCount:  tot,
-			ProgressPct: pct,
-			MergedCount: len(m.MergedSources),
-			Updated:     humanTime(upd),
+			Title:        m.Title,
+			Initial:      titleInitial(m.Title),
+			ThumbnailURL: thumb,
+			Categories:   append([]string(nil), m.Categories...),
+			UnreadCount:  unread,
+			ReadCount:    rc,
+			TotalCount:   tot,
+			ProgressPct:  pct,
+			MergedCount:  len(m.MergedSources),
+			Updated:      humanTime(upd),
 		}
 		allRows = append(allRows, row)
 		if m.SourceID != 0 && m.URL != "" {
@@ -558,6 +577,9 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 		"Nonce":             nonce,
 		"Nav":               nav,
 		"SuwayomiConnected": suwConnected,
+		"UpdateStatus":      updateStatus,
+		"UpdatingParam":     updatingParam,
+		"UpdateProgressPct": updatePct,
 		"SelectedCat":       selectedCat,
 		"Categories":        cats,
 		"Mangas":            rows,

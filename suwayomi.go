@@ -95,6 +95,107 @@ func (c *suwayomiClient) graphql(ctx context.Context, query string, variables ma
 	return nil
 }
 
+// graphqlUpload implements Suwayomi's JavalinGraphQLRequestParser multipart upload
+// protocol ("operations", "map", and file part "0").
+func (c *suwayomiClient) graphqlUpload(ctx context.Context, query string, variables map[string]any, varName, filename string, fileContent io.Reader, out any) error {
+	vars := make(map[string]any, len(variables)+1)
+	for k, v := range variables {
+		vars[k] = v
+	}
+	vars[varName] = nil
+
+	operationsBytes, err := json.Marshal(map[string]any{
+		"query":     query,
+		"variables": vars,
+	})
+	if err != nil {
+		return err
+	}
+	mapBytes, err := json.Marshal(map[string]any{
+		"0": []string{"variables." + varName},
+	})
+	if err != nil {
+		return err
+	}
+
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		if err := mw.WriteField("operations", string(operationsBytes)); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		if err := mw.WriteField("map", string(mapBytes)); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		part, err := mw.CreateFormFile("0", filename)
+		if err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		if _, err := io.Copy(part, fileContent); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		if err := mw.Close(); err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/graphql", pr)
+	if err != nil {
+		_ = pr.Close()
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	c.addAuth(req)
+
+	uploadHTTP := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := uploadHTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("suwayomi graphql upload http %d", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return err
+	}
+	if len(envelope.Errors) > 0 {
+		return errors.New(envelope.Errors[0].Message)
+	}
+	if out != nil && len(envelope.Data) > 0 {
+		return json.Unmarshal(envelope.Data, out)
+	}
+	return nil
+}
+
+func isUnsupportedGraphQLField(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "fieldundefined") ||
+		strings.Contains(msg, "validation error") ||
+		strings.Contains(msg, "unknown field") ||
+		strings.Contains(msg, "cannot query field") ||
+		strings.Contains(msg, "undefined")
+}
+
 func (c *suwayomiClient) checkHealth(ctx context.Context) suwayomiHealth {
 	h := suwayomiHealth{Configured: true}
 	var data struct {
@@ -240,12 +341,13 @@ func (c *suwayomiClient) pullLibrary(ctx context.Context) (*SyncPayload, error) 
 		} `json:"categories"`
 		Mangas struct {
 			Nodes []struct {
-				ID         int64  `json:"id"`
-				SourceID   string `json:"sourceId"`
-				URL        string `json:"url"`
-				Title      string `json:"title"`
-				InLibrary  bool   `json:"inLibrary"`
-				Categories struct {
+				ID           int64  `json:"id"`
+				SourceID     string `json:"sourceId"`
+				URL          string `json:"url"`
+				Title        string `json:"title"`
+				ThumbnailURL string `json:"thumbnailUrl"`
+				InLibrary    bool   `json:"inLibrary"`
+				Categories   struct {
 					Nodes []struct {
 						Name string `json:"name"`
 					} `json:"nodes"`
@@ -274,7 +376,7 @@ func (c *suwayomiClient) pullLibrary(ctx context.Context) (*SyncPayload, error) 
 		categories { nodes { id name order } }
 		mangas(condition: { inLibrary: true }) {
 			nodes {
-				id sourceId url title inLibrary
+				id sourceId url title thumbnailUrl inLibrary
 				categories { nodes { name } }
 				chapters {
 					nodes { id url name chapterNumber scanlator isRead isBookmarked lastPageRead lastReadAt }
@@ -287,8 +389,13 @@ func (c *suwayomiClient) pullLibrary(ctx context.Context) (*SyncPayload, error) 
 		return nil, err
 	}
 
+	repos := append([]string(nil), data.Settings.ExtensionRepos...)
+	if storeRepos, err := c.getExtensionRepos(ctx); err == nil && len(storeRepos) > 0 {
+		repos = mergeStringSet(repos, storeRepos)
+	}
+
 	out := &SyncPayload{
-		ExtensionRepos: data.Settings.ExtensionRepos,
+		ExtensionRepos: repos,
 	}
 	for _, cat := range data.Categories.Nodes {
 		if strings.EqualFold(cat.Name, "Default") {
@@ -305,10 +412,11 @@ func (c *suwayomiClient) pullLibrary(ctx context.Context) (*SyncPayload, error) 
 			continue
 		}
 		sm := SyncManga{
-			SourceID: sid,
-			URL:      m.URL,
-			Title:    m.Title,
-			Favorite: m.InLibrary,
+			SourceID:     sid,
+			URL:          m.URL,
+			Title:        m.Title,
+			ThumbnailURL: strings.TrimSpace(m.ThumbnailURL),
+			Favorite:     m.InLibrary,
 		}
 		for _, cat := range m.Categories.Nodes {
 			if !strings.EqualFold(cat.Name, "Default") {
@@ -797,6 +905,15 @@ func (c *suwayomiClient) toggleLibrary(ctx context.Context, mangaID int64, inLib
 	}, nil)
 }
 
+func (c *suwayomiClient) fetchManga(ctx context.Context, mangaID int64) error {
+	mut := `mutation FetchManga($id: Int!) {
+		fetchManga(input: { id: $id }) {
+			manga { id }
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"id": mangaID}, nil)
+}
+
 func (c *suwayomiClient) fetchChapters(ctx context.Context, mangaID int64) error {
 	mut := `mutation FetchChapters($mangaId: Int!) {
 		fetchChapters(input: { mangaId: $mangaId }) {
@@ -921,10 +1038,147 @@ func (c *suwayomiClient) controlDownloader(ctx context.Context, action string) e
 	return c.graphql(ctx, mut, nil, nil)
 }
 
-func (c *suwayomiClient) startLibraryUpdate(ctx context.Context) error {
+type SuwayomiUpdateStatus struct {
+	IsRunning              bool     `json:"isRunning"`
+	TotalJobs              int      `json:"totalJobs"`
+	FinishedJobs           int      `json:"finishedJobs"`
+	SkippedMangasCount     int      `json:"skippedMangasCount"`
+	SkippedCategoriesCount int      `json:"skippedCategoriesCount"`
+	RunningMangas          []string `json:"runningMangas,omitempty"`
+	PendingMangas          int      `json:"pendingMangas"`
+}
+
+type rawSuwayomiUpdateStatus struct {
+	JobsInfo struct {
+		IsRunning              bool `json:"isRunning"`
+		TotalJobs              int  `json:"totalJobs"`
+		FinishedJobs           int  `json:"finishedJobs"`
+		SkippedMangasCount     int  `json:"skippedMangasCount"`
+		SkippedCategoriesCount int  `json:"skippedCategoriesCount"`
+	} `json:"jobsInfo"`
+	MangaUpdates []struct {
+		Status string `json:"status"`
+		Manga  struct {
+			ID    int64  `json:"id"`
+			Title string `json:"title"`
+		} `json:"manga"`
+	} `json:"mangaUpdates"`
+}
+
+func parseRawUpdateStatus(raw rawSuwayomiUpdateStatus) *SuwayomiUpdateStatus {
+	st := &SuwayomiUpdateStatus{
+		IsRunning:              raw.JobsInfo.IsRunning,
+		TotalJobs:              raw.JobsInfo.TotalJobs,
+		FinishedJobs:           raw.JobsInfo.FinishedJobs,
+		SkippedMangasCount:     raw.JobsInfo.SkippedMangasCount,
+		SkippedCategoriesCount: raw.JobsInfo.SkippedCategoriesCount,
+	}
+	for _, mu := range raw.MangaUpdates {
+		switch strings.ToUpper(strings.TrimSpace(mu.Status)) {
+		case "RUNNING":
+			if title := strings.TrimSpace(mu.Manga.Title); title != "" {
+				st.RunningMangas = append(st.RunningMangas, title)
+			}
+		case "PENDING":
+			st.PendingMangas++
+		}
+	}
+	if st.TotalJobs == 0 && (len(st.RunningMangas) > 0 || st.PendingMangas > 0) {
+		st.TotalJobs = st.FinishedJobs + len(st.RunningMangas) + st.PendingMangas
+	}
+	return st
+}
+
+// ensureLibraryUpdaterDefaults disables Suwayomi's excludeUnreadChapters and
+// excludeNotStarted defaults (which otherwise skip almost every library manga).
+func (c *suwayomiClient) ensureLibraryUpdaterDefaults(ctx context.Context) {
+	mut := `mutation EnsureUpdaterSettings {
+		setSettings(input: { settings: { excludeUnreadChapters: false, excludeNotStarted: false } }) {
+			settings { downloadAsCbz }
+		}
+	}`
+	if err := c.graphql(ctx, mut, nil, nil); err != nil {
+		userMut := `mutation EnsureUpdaterUserSettings {
+			setUserSettings(input: { userSettings: { excludeUnreadChapters: false, excludeNotStarted: false } }) {
+				userSettings { excludeNotStarted }
+			}
+		}`
+		_ = c.graphql(ctx, userMut, nil, nil)
+	}
+}
+
+func (c *suwayomiClient) startLibraryUpdate(ctx context.Context) (*SuwayomiUpdateStatus, error) {
+	c.ensureLibraryUpdaterDefaults(ctx)
+	var data struct {
+		UpdateLibrary struct {
+			UpdateStatus rawSuwayomiUpdateStatus `json:"updateStatus"`
+		} `json:"updateLibrary"`
+	}
 	mut := `mutation UpdateLibrary {
 		updateLibrary(input: {}) {
-			updateStatus { jobsInfo { isRunning } }
+			updateStatus {
+				jobsInfo {
+					isRunning
+					totalJobs
+					finishedJobs
+					skippedMangasCount
+					skippedCategoriesCount
+				}
+				mangaUpdates {
+					status
+					manga { id title }
+				}
+			}
+		}
+	}`
+	if err := c.graphql(ctx, mut, nil, &data); err != nil {
+		return nil, err
+	}
+	st := parseRawUpdateStatus(data.UpdateLibrary.UpdateStatus)
+	if st.TotalJobs == 0 && st.SkippedMangasCount == 0 {
+		select {
+		case <-ctx.Done():
+			return st, nil
+		case <-time.After(60 * time.Millisecond):
+		}
+		if latest, err := c.getLibraryUpdateStatus(ctx); err == nil && latest != nil {
+			if latest.TotalJobs > 0 || latest.SkippedMangasCount > 0 || latest.IsRunning {
+				return latest, nil
+			}
+		}
+	}
+	return st, nil
+}
+
+func (c *suwayomiClient) getLibraryUpdateStatus(ctx context.Context) (*SuwayomiUpdateStatus, error) {
+	var data struct {
+		LibraryUpdateStatus rawSuwayomiUpdateStatus `json:"libraryUpdateStatus"`
+	}
+	q := `query LibraryUpdateStatus {
+		libraryUpdateStatus {
+			jobsInfo {
+				isRunning
+				totalJobs
+				finishedJobs
+				skippedMangasCount
+				skippedCategoriesCount
+			}
+			mangaUpdates {
+				status
+				manga { id title }
+			}
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return nil, err
+	}
+	return parseRawUpdateStatus(data.LibraryUpdateStatus), nil
+}
+
+func (c *suwayomiClient) stopLibraryUpdate(ctx context.Context) error {
+	mut := `mutation StopUpdate {
+		updateStop(input: {}) {
+			clientMutationId
 		}
 	}`
 	return c.graphql(ctx, mut, nil, nil)
@@ -1219,19 +1473,97 @@ func (c *suwayomiClient) listLibrary(ctx context.Context) (*SuwayomiLibraryData,
 	return out, nil
 }
 
+func normalizeSuwayomiRepoURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(u, "?#"); idx >= 0 {
+		u = strings.TrimSpace(u[:idx])
+	}
+	if u == "" {
+		return ""
+	}
+	lower := strings.ToLower(u)
+	if strings.HasSuffix(lower, ".pb") || strings.HasSuffix(lower, ".json") {
+		return u
+	}
+	u = strings.TrimRight(u, "/")
+	if u == "" || u == "http:" || u == "https:" {
+		return ""
+	}
+	return u + "/index.min.json"
+}
+
 func (c *suwayomiClient) getExtensionRepos(ctx context.Context) ([]string, error) {
 	var data struct {
+		ExtensionStores struct {
+			Nodes []struct {
+				IndexURL string `json:"indexUrl"`
+			} `json:"nodes"`
+		} `json:"extensionStores"`
 		Settings struct {
 			ExtensionRepos []string `json:"extensionRepos"`
 		} `json:"settings"`
 	}
 	q := `query GetExtensionRepos {
+		extensionStores { nodes { indexUrl } }
 		settings { extensionRepos }
 	}`
 	if err := c.graphql(ctx, q, nil, &data); err != nil {
-		return nil, err
+		if !isUnsupportedGraphQLField(err) {
+			return nil, err
+		}
+		// Fallback for older Suwayomi (< v2.4) without extensionStores, or future
+		// versions without settings.extensionRepos.
+		var storesOnly struct {
+			ExtensionStores struct {
+				Nodes []struct {
+					IndexURL string `json:"indexUrl"`
+				} `json:"nodes"`
+			} `json:"extensionStores"`
+		}
+		if errStores := c.graphql(ctx, `query GetExtensionStores { extensionStores { nodes { indexUrl } } }`, nil, &storesOnly); errStores == nil {
+			out := make([]string, 0, len(storesOnly.ExtensionStores.Nodes))
+			seen := map[string]bool{}
+			for _, n := range storesOnly.ExtensionStores.Nodes {
+				u := strings.TrimSpace(n.IndexURL)
+				if u != "" && !seen[u] {
+					seen[u] = true
+					out = append(out, u)
+				}
+			}
+			return out, nil
+		}
+
+		var legacy struct {
+			Settings struct {
+				ExtensionRepos []string `json:"extensionRepos"`
+			} `json:"settings"`
+		}
+		if errLegacy := c.graphql(ctx, `query GetExtensionReposLegacy { settings { extensionRepos } }`, nil, &legacy); errLegacy != nil {
+			return nil, errLegacy
+		}
+		return legacy.Settings.ExtensionRepos, nil
 	}
-	return data.Settings.ExtensionRepos, nil
+
+	out := make([]string, 0, len(data.ExtensionStores.Nodes)+len(data.Settings.ExtensionRepos))
+	seen := map[string]bool{}
+	for _, n := range data.ExtensionStores.Nodes {
+		u := strings.TrimSpace(n.IndexURL)
+		if u != "" && !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	for _, r := range data.Settings.ExtensionRepos {
+		u := strings.TrimSpace(r)
+		if u != "" && !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	return out, nil
 }
 
 func (c *suwayomiClient) setExtensionRepos(ctx context.Context, repos []string) ([]string, error) {
@@ -1256,12 +1588,105 @@ func (c *suwayomiClient) setExtensionRepos(ctx context.Context, repos []string) 
 	return data.SetSettings.Settings.ExtensionRepos, nil
 }
 
-// installExternalExtension streams an external .apk to Suwayomi's native REST
-// endpoint POST /api/v1/extension/install as multipart field "file".
+func (c *suwayomiClient) addExtensionRepo(ctx context.Context, repoURL string) error {
+	norm := normalizeSuwayomiRepoURL(repoURL)
+	if norm == "" {
+		return errors.New("invalid repository URL")
+	}
+	mut := `mutation AddExtensionStore($url: String!) {
+		addExtensionStore(input: { indexUrl: $url }) {
+			extensionStore { indexUrl }
+		}
+	}`
+	err := c.graphql(ctx, mut, map[string]any{"url": norm}, nil)
+	if err == nil {
+		return nil
+	}
+	if !isUnsupportedGraphQLField(err) {
+		return err
+	}
+
+	existing, rerr := c.getExtensionRepos(ctx)
+	if rerr != nil {
+		return rerr
+	}
+	for _, r := range existing {
+		if strings.TrimSpace(r) == norm {
+			return nil
+		}
+	}
+	existing = append(existing, norm)
+	_, err = c.setExtensionRepos(ctx, existing)
+	return err
+}
+
+func (c *suwayomiClient) removeExtensionRepo(ctx context.Context, repoURL string) error {
+	raw := strings.TrimSpace(repoURL)
+	if raw == "" {
+		return nil
+	}
+	norm := normalizeSuwayomiRepoURL(raw)
+
+	mut := `mutation RemoveExtensionStore($url: String!) {
+		removeExtensionStore(input: { indexUrl: $url }) {
+			clientMutationId
+		}
+	}`
+	err := c.graphql(ctx, mut, map[string]any{"url": raw}, nil)
+	if err == nil {
+		if norm != "" && norm != raw {
+			_ = c.graphql(ctx, mut, map[string]any{"url": norm}, nil)
+		}
+		return nil
+	}
+	if !isUnsupportedGraphQLField(err) && norm != "" && norm != raw {
+		if errNorm := c.graphql(ctx, mut, map[string]any{"url": norm}, nil); errNorm == nil {
+			return nil
+		}
+	}
+
+	// Fallback to legacy setExtensionRepos (also cleans up un-normalized entries stored in settings.extensionRepos).
+	existing, rerr := c.getExtensionRepos(ctx)
+	if rerr != nil {
+		if !isUnsupportedGraphQLField(err) {
+			return err
+		}
+		return rerr
+	}
+	filtered := make([]string, 0, len(existing))
+	for _, r := range existing {
+		trimmed := strings.TrimSpace(r)
+		if trimmed != raw && (norm == "" || trimmed != norm) {
+			filtered = append(filtered, r)
+		}
+	}
+	_, serr := c.setExtensionRepos(ctx, filtered)
+	if serr != nil && !isUnsupportedGraphQLField(err) {
+		return err
+	}
+	return serr
+}
+
+// installExternalExtension uploads an external .apk via Suwayomi's GraphQL
+// installExternalExtension mutation first, falling back to the legacy REST
+// endpoint POST /api/v1/extension/install for backwards compatibility.
 func (c *suwayomiClient) installExternalExtension(ctx context.Context, filename string, r io.Reader) error {
 	if strings.TrimSpace(filename) == "" {
 		filename = "extension.apk"
 	}
+	apkBytes, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	gqlMut := `mutation InstallExternalExtension($file: Upload!) {
+		installExternalExtension(input: { extensionFile: $file }) {
+			extension { pkgName }
+		}
+	}`
+	if err := c.graphqlUpload(ctx, gqlMut, nil, "file", filename, bytes.NewReader(apkBytes), nil); err == nil {
+		return nil
+	}
+
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 	go func() {
@@ -1270,7 +1695,7 @@ func (c *suwayomiClient) installExternalExtension(ctx context.Context, filename 
 			_ = pw.CloseWithError(err)
 			return
 		}
-		if _, err := io.Copy(part, r); err != nil {
+		if _, err := part.Write(apkBytes); err != nil {
 			_ = pw.CloseWithError(err)
 			return
 		}
@@ -1303,6 +1728,149 @@ func (c *suwayomiClient) installExternalExtension(ctx context.Context, filename 
 		return fmt.Errorf("suwayomi apk install http %d", resp.StatusCode)
 	}
 	return nil
+}
+
+type SuwayomiRestoreStatus struct {
+	State         string `json:"state"`
+	MangaProgress int    `json:"mangaProgress"`
+	TotalManga    int    `json:"totalManga"`
+}
+
+func (c *suwayomiClient) restoreBackup(ctx context.Context, filename string, r io.Reader) (string, *SuwayomiRestoreStatus, error) {
+	if strings.TrimSpace(filename) == "" {
+		filename = "backup.tachibk"
+	}
+	var data struct {
+		RestoreBackup struct {
+			ID     string                 `json:"id"`
+			Status *SuwayomiRestoreStatus `json:"status"`
+		} `json:"restoreBackup"`
+	}
+	mut := `mutation RestoreBackup($backup: Upload!) {
+		restoreBackup(input: { backup: $backup }) {
+			id
+			status { state mangaProgress totalManga }
+		}
+	}`
+	if err := c.graphqlUpload(ctx, mut, nil, "backup", filename, r, &data); err != nil {
+		return "", nil, err
+	}
+	return data.RestoreBackup.ID, data.RestoreBackup.Status, nil
+}
+
+func (c *suwayomiClient) getRestoreStatus(ctx context.Context, id string) (*SuwayomiRestoreStatus, error) {
+	var data struct {
+		RestoreStatus *SuwayomiRestoreStatus `json:"restoreStatus"`
+	}
+	q := `query RestoreStatus($id: String!) {
+		restoreStatus(id: $id) {
+			state
+			mangaProgress
+			totalManga
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{"id": id}, &data); err != nil {
+		return nil, err
+	}
+	return data.RestoreStatus, nil
+}
+
+func (c *suwayomiClient) waitRestoreBackup(ctx context.Context, id string, initial *SuwayomiRestoreStatus, maxWait time.Duration) *SuwayomiRestoreStatus {
+	cur := initial
+	if cur != nil {
+		st := strings.ToUpper(strings.TrimSpace(cur.State))
+		if st == "SUCCESS" || st == "FAILURE" {
+			return cur
+		}
+	}
+	if strings.TrimSpace(id) == "" || maxWait <= 0 {
+		return cur
+	}
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return cur
+		case <-time.After(200 * time.Millisecond):
+		}
+		next, err := c.getRestoreStatus(ctx, id)
+		if err != nil {
+			continue
+		}
+		if next != nil {
+			cur = next
+			st := strings.ToUpper(strings.TrimSpace(cur.State))
+			if st == "SUCCESS" || st == "FAILURE" {
+				return cur
+			}
+		}
+	}
+	return cur
+}
+
+// materializeMissingMangas checks Suwayomi's in-library manga keys and imports
+// any favorite SyncManga entries missing from Suwayomi via a synthesized .tachibk backup.
+func (c *suwayomiClient) materializeMissingMangas(ctx context.Context, cats []SyncCategory, mangas []SyncManga) (int, error) {
+	var favs []SyncManga
+	for _, m := range mangas {
+		if m.Favorite && m.SourceID != 0 && m.URL != "" {
+			favs = append(favs, m)
+		}
+	}
+	if len(favs) == 0 {
+		return 0, nil
+	}
+
+	var data struct {
+		Mangas struct {
+			Nodes []struct {
+				SourceID string `json:"sourceId"`
+				URL      string `json:"url"`
+			} `json:"nodes"`
+		} `json:"mangas"`
+	}
+	q := `query ExistingLibraryKeys {
+		mangas(condition: { inLibrary: true }) {
+			nodes { sourceId url }
+		}
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return 0, err
+	}
+
+	have := make(map[string]bool, len(data.Mangas.Nodes))
+	for _, n := range data.Mangas.Nodes {
+		if sid, err := strconv.ParseInt(n.SourceID, 10, 64); err == nil {
+			have[SyncMangaKey{SourceID: sid, URL: n.URL}.str()] = true
+		}
+	}
+
+	var missing []SyncManga
+	seenMissing := map[string]bool{}
+	for _, m := range favs {
+		key := SyncMangaKey{SourceID: m.SourceID, URL: m.URL}.str()
+		if !have[key] && !seenMissing[key] {
+			seenMissing[key] = true
+			missing = append(missing, m)
+		}
+	}
+	if len(missing) == 0 {
+		return 0, nil
+	}
+
+	tachibkBytes, err := encodeSyncPayloadToTachibk(cats, missing)
+	if err != nil {
+		return 0, err
+	}
+	restoreID, initStatus, err := c.restoreBackup(ctx, "yata-sync.tachibk", bytes.NewReader(tachibkBytes))
+	if err != nil {
+		return 0, err
+	}
+	finalStatus := c.waitRestoreBackup(ctx, restoreID, initStatus, 15*time.Second)
+	if finalStatus != nil && strings.EqualFold(finalStatus.State, "FAILURE") {
+		return 0, errors.New("suwayomi failed to materialize library backup")
+	}
+	return len(missing), nil
 }
 
 // ---- Source Preferences -----------------------------------------------------
@@ -1697,28 +2265,31 @@ func (c *suwayomiClient) pushCategoriesAndRepos(ctx context.Context, cats []Sync
 		}
 	}
 	if len(repos) > 0 {
+		have := map[string]bool{}
 		if existing, err := c.getExtensionRepos(ctx); err == nil {
-			have := make(map[string]bool, len(existing))
-			merged := make([]string, 0, len(existing)+len(repos))
 			for _, r := range existing {
-				norm := strings.TrimRight(strings.TrimSpace(r), "/")
-				if norm != "" && !have[norm] {
-					have[norm] = true
-					merged = append(merged, r)
+				trimmed := strings.TrimSpace(r)
+				if trimmed != "" {
+					have[trimmed] = true
 				}
 			}
-			changed := false
-			for _, r := range repos {
-				norm := strings.TrimRight(strings.TrimSpace(r), "/")
-				if norm != "" && !have[norm] {
-					have[norm] = true
-					merged = append(merged, r)
-					changed = true
-				}
+		}
+		added := false
+		for _, r := range repos {
+			norm := normalizeSuwayomiRepoURL(r)
+			if norm == "" || (!strings.HasPrefix(norm, "http://") && !strings.HasPrefix(norm, "https://")) {
+				continue
 			}
-			if changed {
-				_, _ = c.setExtensionRepos(ctx, merged)
+			if have[norm] {
+				continue
 			}
+			if err := c.addExtensionRepo(ctx, norm); err == nil {
+				have[norm] = true
+				added = true
+			}
+		}
+		if added {
+			_ = c.fetchExtensions(ctx)
 		}
 	}
 }

@@ -37,6 +37,24 @@ func (s shelf) handleSuwayomiImage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s shelf) handleSuwayomiUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	suw := s.suwayomi()
+	if suw == nil {
+		writeJSON(w, SuwayomiUpdateStatus{IsRunning: false})
+		return
+	}
+	st, err := suw.getLibraryUpdateStatus(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if st == nil {
+		writeJSON(w, SuwayomiUpdateStatus{IsRunning: false})
+		return
+	}
+	writeJSON(w, st)
+}
+
 // ---- Browse & Extensions ----------------------------------------------------
 
 type globalSearchGroup struct {
@@ -274,6 +292,26 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 				extRepos = repos
 			}
 			exts, err := suw.listExtensions(r.Context())
+			if err == nil && len(extRepos) > 0 && len(exts) == 0 {
+				upgraded := false
+				for _, rURL := range extRepos {
+					norm := normalizeSuwayomiRepoURL(rURL)
+					if norm != "" && norm != strings.TrimSpace(rURL) {
+						if suw.addExtensionRepo(r.Context(), norm) == nil {
+							upgraded = true
+						}
+					}
+				}
+				if upgraded {
+					if repos, rerr := suw.getExtensionRepos(r.Context()); rerr == nil {
+						extRepos = repos
+					}
+				}
+				_ = suw.fetchExtensions(r.Context())
+				if refreshed, lerr := suw.listExtensions(r.Context()); lerr == nil {
+					exts = refreshed
+				}
+			}
 			if err != nil {
 				problem = "Could not load extensions from Suwayomi: " + err.Error()
 			} else {
@@ -477,40 +515,19 @@ func (s shelf) handleExtensionAction(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/browse?tab=extensions&problem=Repository+URL+must+start+with+http%3A%2F%2F+or+https%3A%2F%2F.", http.StatusSeeOther)
 			return
 		}
-		repos, rerr := suw.getExtensionRepos(r.Context())
-		if rerr != nil {
-			err = rerr
-			break
+		normURL := normalizeSuwayomiRepoURL(repoURL)
+		if normURL == "" {
+			http.Redirect(w, r, "/browse?tab=extensions&problem=Invalid+repository+URL.", http.StatusSeeOther)
+			return
 		}
-		exists := false
-		for _, existing := range repos {
-			if existing == repoURL {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			repos = append(repos, repoURL)
-			_, err = suw.setExtensionRepos(r.Context(), repos)
-			if err == nil {
-				_ = suw.fetchExtensions(r.Context())
-			}
+		err = suw.addExtensionRepo(r.Context(), normURL)
+		if err == nil {
+			_ = suw.fetchExtensions(r.Context())
 		}
 		msg = "Extension repository added."
 	case "remove-repo":
 		repoURL := strings.TrimSpace(r.PostFormValue("repoUrl"))
-		repos, rerr := suw.getExtensionRepos(r.Context())
-		if rerr != nil {
-			err = rerr
-			break
-		}
-		filtered := make([]string, 0, len(repos))
-		for _, existing := range repos {
-			if existing != repoURL {
-				filtered = append(filtered, existing)
-			}
-		}
-		_, err = suw.setExtensionRepos(r.Context(), filtered)
+		err = suw.removeExtensionRepo(r.Context(), repoURL)
 		msg = "Extension repository removed."
 	default:
 		http.Redirect(w, r, "/browse?tab=extensions&problem=Unknown+action.", http.StatusSeeOther)
@@ -1171,15 +1188,20 @@ func (s shelf) handleUpdatesPage(w http.ResponseWriter, r *http.Request) {
 	today := dayStart(time.Unix(now(), 0).In(loc))
 
 	var (
-		configured bool
-		groups     []updateDayGroup
-		total      int
-		problem    = r.URL.Query().Get("problem")
-		note       = r.URL.Query().Get("note")
+		configured    bool
+		groups        []updateDayGroup
+		total         int
+		updateStatus  = &SuwayomiUpdateStatus{}
+		updatingParam = r.URL.Query().Get("updating") == "1"
+		problem       = r.URL.Query().Get("problem")
+		note          = r.URL.Query().Get("note")
 	)
 
 	if suw := s.suwayomi(); suw != nil {
 		configured = true
+		if ust, uerr := suw.getLibraryUpdateStatus(r.Context()); uerr == nil && ust != nil {
+			updateStatus = ust
+		}
 		updates, err := suw.listRecentUpdates(r.Context(), 100)
 		if err != nil {
 			problem = "Could not load recent updates: " + err.Error()
@@ -1226,17 +1248,28 @@ func (s shelf) handleUpdatesPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	updatePct := 0
+	if updateStatus.TotalJobs > 0 {
+		updatePct = updateStatus.FinishedJobs * 100 / updateStatus.TotalJobs
+		if updatePct > 100 {
+			updatePct = 100
+		}
+	}
+
 	nonce := newNonce()
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := updatesTmpl.Execute(w, map[string]any{
-		"Nonce":      nonce,
-		"Nav":        nav,
-		"Configured": configured,
-		"Groups":     groups,
-		"Total":      total,
-		"Note":       note,
-		"Problem":    problem,
+		"Nonce":             nonce,
+		"Nav":               nav,
+		"Configured":        configured,
+		"UpdateStatus":      updateStatus,
+		"UpdatingParam":     updatingParam,
+		"UpdateProgressPct": updatePct,
+		"Groups":            groups,
+		"Total":             total,
+		"Note":              note,
+		"Problem":           problem,
 	}); err != nil {
 		log.Printf("yata: rendering updates page failed: %v", err)
 	}
@@ -1587,9 +1620,60 @@ func (s shelf) handleDownloadsControl(w http.ResponseWriter, r *http.Request) {
 	case "clear":
 		err = suw.controlDownloader(r.Context(), "clear")
 		msg = "Download queue cleared."
+	case "stop-update":
+		err = suw.stopLibraryUpdate(r.Context())
+		msg = "Library update stopped."
 	case "update-library":
-		err = suw.startLibraryUpdate(r.Context())
-		msg = "Library update started."
+		syncMu.Lock()
+		st := s.loadSyncState()
+		syncMu.Unlock()
+		var syncCats []SyncCategory
+		for _, c := range st.Categories {
+			syncCats = append(syncCats, c)
+		}
+		var syncFavs []SyncManga
+		for _, m := range st.Mangas {
+			if m.Favorite && m.SourceID != 0 && m.URL != "" {
+				syncFavs = append(syncFavs, m)
+			}
+		}
+		if len(syncFavs) > 0 {
+			var syncRepos []string
+			for rURL := range st.Repos {
+				syncRepos = append(syncRepos, rURL)
+			}
+			if len(syncCats) > 0 || len(syncRepos) > 0 {
+				suw.pushCategoriesAndRepos(r.Context(), syncCats, syncRepos)
+			}
+			mctx, mcancel := context.WithTimeout(r.Context(), 15*time.Second)
+			_, _ = suw.materializeMissingMangas(mctx, syncCats, syncFavs)
+			mcancel()
+		}
+
+		if lib, lerr := suw.listLibrary(r.Context()); lerr == nil && lib != nil && len(lib.Mangas) == 0 {
+			http.Redirect(w, r, redir+"?problem="+url.QueryEscape("Your library is empty. Sync from Karasu, add manga in Browse, or restore a backup in Backups."), http.StatusSeeOther)
+			return
+		}
+
+		status, uerr := suw.startLibraryUpdate(r.Context())
+		if uerr != nil {
+			err = uerr
+			break
+		}
+		if status != nil && (status.TotalJobs > 0 || status.IsRunning) {
+			noteMsg := "Library update started."
+			if status.TotalJobs > 0 {
+				noteMsg = fmt.Sprintf("Library update started (%d manga queued).", status.TotalJobs)
+			}
+			http.Redirect(w, r, redir+"?note="+url.QueryEscape(noteMsg)+"&updating=1", http.StatusSeeOther)
+			return
+		}
+		if status != nil && status.SkippedMangasCount > 0 {
+			noteMsg := fmt.Sprintf("Library up to date (%d manga skipped by filters).", status.SkippedMangasCount)
+			http.Redirect(w, r, redir+"?note="+url.QueryEscape(noteMsg), http.StatusSeeOther)
+			return
+		}
+		msg = "Library up to date."
 	case "cleanup-read":
 		var deleted int
 		deleted, err = s.cleanupReadDownloads(r.Context())

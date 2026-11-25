@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,6 +52,7 @@ type SyncManga struct {
 	SourceID      int64              `json:"sourceId"`
 	URL           string             `json:"url"`
 	Title         string             `json:"title"`
+	ThumbnailURL  string             `json:"thumbnailUrl,omitempty"`
 	Favorite      bool               `json:"favorite"`
 	Categories    []string           `json:"categories,omitempty"`
 	UpdatedAt     int64              `json:"updatedAt"`
@@ -203,6 +205,13 @@ func mergeSyncIntoState(st *persistedSyncState, in SyncPayload, serverNowMs int6
 		if m.Title != "" && (m.UpdatedAt >= existing.UpdatedAt || merged.Title == "") {
 			merged.Title = m.Title
 		}
+		if m.ThumbnailURL != "" {
+			mIsRemote := strings.HasPrefix(m.ThumbnailURL, "http://") || strings.HasPrefix(m.ThumbnailURL, "https://")
+			exIsRemote := strings.HasPrefix(merged.ThumbnailURL, "http://") || strings.HasPrefix(merged.ThumbnailURL, "https://")
+			if merged.ThumbnailURL == "" || (mIsRemote && (!exIsRemote || m.UpdatedAt >= existing.UpdatedAt)) {
+				merged.ThumbnailURL = m.ThumbnailURL
+			}
+		}
 		if m.UpdatedAt > existing.UpdatedAt {
 			merged.Favorite = m.Favorite
 			if len(m.Categories) > 0 {
@@ -269,6 +278,94 @@ func mergeChapters(a, b []SyncChapter) []SyncChapter {
 		return out[i].URL < out[j].URL
 	})
 	return out
+}
+
+var syncBgLocks = struct {
+	mu    sync.Mutex
+	byDir map[string]*atomic.Bool
+}{
+	byDir: map[string]*atomic.Bool{},
+}
+
+func (s shelf) syncBgGuard() *atomic.Bool {
+	syncBgLocks.mu.Lock()
+	defer syncBgLocks.mu.Unlock()
+	g, ok := syncBgLocks.byDir[s.dir]
+	if !ok {
+		g = &atomic.Bool{}
+		syncBgLocks.byDir[s.dir] = g
+	}
+	return g
+}
+
+func runBackgroundSuwayomiSync(suw *suwayomiClient, cats []SyncCategory, favMangas []SyncManga, exts []SyncExtension, needMaterialize bool, materializedCount int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if needMaterialize && len(favMangas) > 0 {
+		if n, err := suw.materializeMissingMangas(ctx, cats, favMangas); err == nil {
+			materializedCount += n
+		}
+	}
+
+	if len(exts) > 0 {
+		remoteExts, err := suw.listExtensions(ctx)
+		if err == nil {
+			byPkg := make(map[string]SuwayomiExtension, len(remoteExts))
+			for _, re := range remoteExts {
+				byPkg[re.PkgName] = re
+			}
+			needFetch := false
+			for _, want := range exts {
+				if want.PkgName == "" {
+					continue
+				}
+				if re, ok := byPkg[want.PkgName]; !ok {
+					needFetch = true
+					break
+				} else if !re.IsInstalled {
+					// Already listed as available
+				}
+			}
+			if needFetch {
+				if ferr := suw.fetchExtensions(ctx); ferr == nil {
+					if refreshed, lerr := suw.listExtensions(ctx); lerr == nil {
+						byPkg = make(map[string]SuwayomiExtension, len(refreshed))
+						for _, re := range refreshed {
+							byPkg[re.PkgName] = re
+						}
+					}
+				}
+			}
+			for _, want := range exts {
+				if want.PkgName == "" {
+					continue
+				}
+				if re, ok := byPkg[want.PkgName]; ok && !re.IsInstalled {
+					_ = suw.updateExtension(ctx, want.PkgName, true, false, false)
+				}
+			}
+		}
+	}
+
+	if materializedCount > 0 {
+		if lib, err := suw.listLibrary(ctx); err == nil && lib != nil {
+			var emptyIDs []int64
+			for _, m := range lib.Mangas {
+				if m.TotalChapters == 0 && m.ID > 0 {
+					emptyIDs = append(emptyIDs, m.ID)
+				}
+			}
+			if len(emptyIDs) > 25 {
+				_, _ = suw.startLibraryUpdate(ctx)
+			} else {
+				for _, mid := range emptyIDs {
+					_ = suw.fetchManga(ctx, mid)
+					_ = suw.fetchChapters(ctx, mid)
+				}
+			}
+		}
+	}
 }
 
 func (s shelf) handleSyncReconcile(w http.ResponseWriter, r *http.Request) {
@@ -359,12 +456,32 @@ func (s shelf) handleSyncReconcile(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Best-effort bidirectional push back to Suwayomi: deletions, categories,
-	// extension repos, and merged chapter read states.
+	// extension repos, missing library manga materialization, and chapter read states.
 	if suw != nil {
 		if len(req.DeletedMangaKeys) > 0 {
 			suw.pushRemovals(r.Context(), req.DeletedMangaKeys)
 		}
 		suw.pushCategoriesAndRepos(r.Context(), resp.Categories, resp.ExtensionRepos)
+
+		var favMangas []SyncManga
+		for _, m := range resp.Mangas {
+			if m.Favorite && m.SourceID != 0 && m.URL != "" {
+				favMangas = append(favMangas, m)
+			}
+		}
+
+		materialized := 0
+		needAsyncMaterialize := false
+		if len(favMangas) > 0 {
+			if len(favMangas) <= 200 {
+				mctx, mcancel := context.WithTimeout(r.Context(), 15*time.Second)
+				materialized, _ = suw.materializeMissingMangas(mctx, resp.Categories, favMangas)
+				mcancel()
+			} else {
+				needAsyncMaterialize = true
+			}
+		}
+
 		if len(resp.Mangas) > 0 {
 			suw.pushChapterReadStates(r.Context(), resp.Mangas)
 		}
@@ -372,6 +489,19 @@ func (s shelf) handleSyncReconcile(w http.ResponseWriter, r *http.Request) {
 			cleanCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			_, _ = s.cleanupReadDownloads(cleanCtx)
 			cancel()
+		}
+
+		if len(req.InstalledExtensions) > 0 || materialized > 0 || needAsyncMaterialize {
+			guard := s.syncBgGuard()
+			if guard.CompareAndSwap(false, true) {
+				catsSnap := append([]SyncCategory(nil), resp.Categories...)
+				favsSnap := append([]SyncManga(nil), favMangas...)
+				extsSnap := append([]SyncExtension(nil), req.InstalledExtensions...)
+				go func() {
+					defer guard.Store(false)
+					runBackgroundSuwayomiSync(suw, catsSnap, favsSnap, extsSnap, needAsyncMaterialize, materialized)
+				}()
+			}
 		}
 	}
 

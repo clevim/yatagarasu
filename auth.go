@@ -222,7 +222,7 @@ func securityHeaders(w http.ResponseWriter) {
 func contentSecurityPolicy(w http.ResponseWriter, nonce string) {
 	w.Header().Set("Content-Security-Policy", strings.Join([]string{
 		"default-src 'none'",
-		"img-src 'self' data:",
+		"img-src 'self' data: https:",
 		"connect-src 'self'",
 		"style-src 'unsafe-inline'",
 		"script-src 'nonce-" + nonce + "'",

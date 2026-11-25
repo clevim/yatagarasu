@@ -371,6 +371,7 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("POST /api/backups", s.handleUploadBackup)
 	mux.HandleFunc("GET /api/backups/{id}", s.handleDownloadBackup)
 	mux.HandleFunc("DELETE /api/backups/{id}", s.handleDeleteBackup)
+	mux.HandleFunc("POST /api/backups/{id}/restore", s.handleRestoreBackupAPI)
 
 	mux.HandleFunc("GET /plugin.zip", pluginZipHandler(s.cfg))
 	mux.HandleFunc("GET /library", s.handleLibraryPage)
@@ -380,6 +381,7 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("GET /history", s.handleHistoryPage)
 	mux.HandleFunc("GET /shelf", s.handleIndex)
 	mux.HandleFunc("GET /api/suwayomi/image", s.handleSuwayomiImage)
+	mux.HandleFunc("GET /api/suwayomi/update-status", s.handleSuwayomiUpdateStatus)
 	mux.HandleFunc("GET /api/shelf/{chapterId}/page/{index}", s.handleShelfChapterPage)
 	mux.HandleFunc("GET /browse", s.handleBrowsePage)
 	mux.HandleFunc("POST /browse/extensions", s.handleExtensionAction)
@@ -404,6 +406,7 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("POST /translate/queue", s.handlePreTranslateEnqueue)
 	mux.HandleFunc("GET /backups", s.handleBackupsPage)
 	mux.HandleFunc("POST /backups/upload", s.handleBackupUploadForm)
+	mux.HandleFunc("POST /backups/{id}/restore", s.handleBackupRestoreForm)
 	mux.HandleFunc("POST /backups/{id}/delete", s.handleBackupDeleteForm)
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSaveSettings)

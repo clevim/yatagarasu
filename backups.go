@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type BackupInfo struct {
@@ -207,6 +212,88 @@ func (s shelf) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	os.Remove(p)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s shelf) restoreBackupByID(ctx context.Context, id string) (mangaCount int, suwRestored bool, suwState string, statusCode int, err error) {
+	p, ok := s.validBackupPath(id)
+	if !ok {
+		return 0, false, "", http.StatusBadRequest, errors.New("invalid backup id")
+	}
+	raw, err := os.ReadFile(p)
+	if os.IsNotExist(err) {
+		return 0, false, "", http.StatusNotFound, errors.New("backup not found")
+	}
+	if err != nil {
+		return 0, false, "", http.StatusInternalServerError, errors.New("cannot read backup")
+	}
+
+	payload, err := decodeTachibkToSyncPayload(raw)
+	if err != nil {
+		return 0, false, "", http.StatusBadRequest, fmt.Errorf("invalid .tachibk archive: %w", err)
+	}
+
+	serverNowMs := now() * 1000
+	syncMu.Lock()
+	st := s.loadSyncState()
+	mergeSyncIntoState(&st, *payload, serverNowMs)
+	saveErr := s.saveSyncState(st)
+	syncMu.Unlock()
+	if saveErr != nil {
+		return 0, false, "", http.StatusInternalServerError, errors.New("failed to persist restored sync state")
+	}
+
+	mangaCount = len(payload.Mangas)
+
+	if suw := s.suwayomi(); suw != nil {
+		suw.pushCategoriesAndRepos(ctx, payload.Categories, payload.ExtensionRepos)
+		restoreID, initStatus, rerr := suw.restoreBackup(ctx, id, bytes.NewReader(raw))
+		if rerr != nil {
+			return mangaCount, false, "", http.StatusBadGateway, rerr
+		}
+		finalStatus := suw.waitRestoreBackup(ctx, restoreID, initStatus, 15*time.Second)
+		if finalStatus != nil && strings.EqualFold(finalStatus.State, "FAILURE") {
+			return mangaCount, false, "FAILURE", http.StatusBadGateway, errors.New("Suwayomi failed to restore backup")
+		}
+		suwState = "SUCCESS"
+		if finalStatus != nil && strings.TrimSpace(finalStatus.State) != "" {
+			suwState = finalStatus.State
+		}
+		return mangaCount, true, suwState, http.StatusOK, nil
+	}
+
+	return mangaCount, false, "", http.StatusOK, nil
+}
+
+func (s shelf) handleRestoreBackupAPI(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mangaCount, suwRestored, suwState, code, err := s.restoreBackupByID(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok":               true,
+		"id":               id,
+		"importedMangas":   mangaCount,
+		"suwayomiRestored": suwRestored,
+		"suwayomiState":    suwState,
+	})
+}
+
+func (s shelf) handleBackupRestoreForm(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mangaCount, suwRestored, suwState, _, err := s.restoreBackupByID(r.Context(), id)
+	if err != nil {
+		http.Redirect(w, r, "/backups?problem="+url.QueryEscape("Restore failed: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+	var note string
+	if suwRestored && suwState != "" && !strings.EqualFold(suwState, "SUCCESS") {
+		note = fmt.Sprintf("Backup restore in progress (%d manga imported into library; Suwayomi %s).", mangaCount, strings.ToLower(suwState))
+	} else {
+		note = fmt.Sprintf("Backup restored: %d manga imported into library.", mangaCount)
+	}
+	http.Redirect(w, r, "/backups?note="+url.QueryEscape(note), http.StatusSeeOther)
 }
 
 const maxBackupUpload = 256 << 20 // 256 MiB

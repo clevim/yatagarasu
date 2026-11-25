@@ -14,10 +14,19 @@ if [ ! -f "${SUWAYOMI_CONF}" ]; then
 server.ip = "127.0.0.1"
 server.port = 4567
 server.downloadAsCbz = true
+server.excludeUnreadChapters = false
+server.excludeNotStarted = false
 server.initialOpenInBrowserEnabled = false
 server.systemTrayEnabled = false
 server.webUIEnabled = false
 EOF
+else
+  if ! grep -q 'server\.excludeUnreadChapters' "${SUWAYOMI_CONF}"; then
+    printf '\nserver.excludeUnreadChapters = false\n' >> "${SUWAYOMI_CONF}"
+  fi
+  if ! grep -q 'server\.excludeNotStarted' "${SUWAYOMI_CONF}"; then
+    printf 'server.excludeNotStarted = false\n' >> "${SUWAYOMI_CONF}"
+  fi
 fi
 
 export YATA_DATA
