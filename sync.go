@@ -48,6 +48,31 @@ func (k SyncMangaKey) str() string {
 	return fmt.Sprintf("%d|%s", k.SourceID, k.URL)
 }
 
+type SyncTrack struct {
+	TrackerID           int     `json:"trackerId"`
+	RemoteID            int64   `json:"remoteId"`
+	LibraryID           int64   `json:"libraryId,omitempty"`
+	Title               string  `json:"title,omitempty"`
+	LastChapterRead     float64 `json:"lastChapterRead"`
+	TotalChapters       int     `json:"totalChapters,omitempty"`
+	Score               float64 `json:"score,omitempty"`
+	Status              int     `json:"status,omitempty"`
+	TrackingURL         string  `json:"trackingUrl,omitempty"`
+	StartedReadingDate  int64   `json:"startedReadingDate,omitempty"`
+	FinishedReadingDate int64   `json:"finishedReadingDate,omitempty"`
+	UpdatedAt           int64   `json:"updatedAt,omitempty"`
+}
+
+type SyncTrackerAccount struct {
+	TrackerID   int    `json:"trackerId"`
+	Name        string `json:"name,omitempty"`
+	Username    string `json:"username,omitempty"`
+	Password    string `json:"password,omitempty"`
+	Token       string `json:"token,omitempty"`
+	AuthExpired bool   `json:"authExpired,omitempty"`
+	UpdatedAt   int64  `json:"updatedAt,omitempty"`
+}
+
 type SyncManga struct {
 	SourceID      int64              `json:"sourceId"`
 	URL           string             `json:"url"`
@@ -58,6 +83,7 @@ type SyncManga struct {
 	UpdatedAt     int64              `json:"updatedAt"`
 	MergedSources []SyncMergedSource `json:"mergedSources,omitempty"`
 	Chapters      []SyncChapter      `json:"chapters,omitempty"`
+	Tracks        []SyncTrack        `json:"tracks,omitempty"`
 }
 
 type SyncExtension struct {
@@ -68,24 +94,26 @@ type SyncExtension struct {
 }
 
 type SyncPayload struct {
-	DeviceID            string          `json:"deviceId,omitempty"`
-	LastSyncAt          int64           `json:"lastSyncAt,omitempty"`
-	ServerTime          int64           `json:"serverTime,omitempty"`
-	Categories          []SyncCategory  `json:"categories"`
-	Mangas              []SyncManga     `json:"mangas"`
-	DeletedMangaKeys    []SyncMangaKey  `json:"deletedMangaKeys,omitempty"`
-	ExtensionRepos      []string        `json:"extensionRepos"`
-	InstalledExtensions []SyncExtension `json:"installedExtensions,omitempty"`
-	MissingExtensions   []SyncExtension `json:"missingExtensions,omitempty"`
+	DeviceID            string               `json:"deviceId,omitempty"`
+	LastSyncAt          int64                `json:"lastSyncAt,omitempty"`
+	ServerTime          int64                `json:"serverTime,omitempty"`
+	Categories          []SyncCategory       `json:"categories"`
+	Mangas              []SyncManga          `json:"mangas"`
+	DeletedMangaKeys    []SyncMangaKey       `json:"deletedMangaKeys,omitempty"`
+	ExtensionRepos      []string             `json:"extensionRepos"`
+	InstalledExtensions []SyncExtension      `json:"installedExtensions,omitempty"`
+	MissingExtensions   []SyncExtension      `json:"missingExtensions,omitempty"`
+	TrackerAccounts     []SyncTrackerAccount `json:"trackerAccounts,omitempty"`
 }
 
 type persistedSyncState struct {
-	Categories map[string]SyncCategory  `json:"categories"`
-	Mangas     map[string]SyncManga     `json:"mangas"`
-	DeletedAt  map[string]int64         `json:"deletedAt"`
-	Repos      map[string]bool          `json:"repos"`
-	Extensions map[string]SyncExtension `json:"extensions"`
-	UpdatedAt  int64                    `json:"updatedAt"`
+	Categories map[string]SyncCategory    `json:"categories"`
+	Mangas     map[string]SyncManga       `json:"mangas"`
+	DeletedAt  map[string]int64           `json:"deletedAt"`
+	Repos      map[string]bool            `json:"repos"`
+	Extensions map[string]SyncExtension   `json:"extensions"`
+	Trackers   map[int]SyncTrackerAccount `json:"trackers,omitempty"`
+	UpdatedAt  int64                      `json:"updatedAt"`
 }
 
 var syncMu sync.Mutex
@@ -101,6 +129,7 @@ func (s shelf) loadSyncState() persistedSyncState {
 		DeletedAt:  map[string]int64{},
 		Repos:      map[string]bool{},
 		Extensions: map[string]SyncExtension{},
+		Trackers:   map[int]SyncTrackerAccount{},
 	}
 	b, err := os.ReadFile(s.syncStatePath())
 	if err != nil {
@@ -121,6 +150,9 @@ func (s shelf) loadSyncState() persistedSyncState {
 	}
 	if st.Extensions == nil {
 		st.Extensions = map[string]SyncExtension{}
+	}
+	if st.Trackers == nil {
+		st.Trackers = map[int]SyncTrackerAccount{}
 	}
 	return st
 }
@@ -232,9 +264,118 @@ func mergeSyncIntoState(st *persistedSyncState, in SyncPayload, serverNowMs int6
 		}
 
 		merged.Chapters = mergeChapters(existing.Chapters, m.Chapters)
+		merged.Tracks = mergeTracks(existing.Tracks, m.Tracks)
 		st.Mangas[key] = merged
 	}
+
+	// 6. Logged-in tracker accounts (non-empty credentials with newer updatedAt win).
+	if st.Trackers == nil {
+		st.Trackers = map[int]SyncTrackerAccount{}
+	}
+	for _, acc := range in.TrackerAccounts {
+		if acc.TrackerID <= 0 {
+			continue
+		}
+		if acc.Token == "" && acc.Username == "" && acc.Password == "" {
+			continue
+		}
+		if acc.UpdatedAt == 0 {
+			acc.UpdatedAt = serverNowMs
+		}
+		prev, exists := st.Trackers[acc.TrackerID]
+		if !exists || acc.UpdatedAt >= prev.UpdatedAt || (prev.Token == "" && acc.Token != "") {
+			if acc.Name == "" {
+				acc.Name = prev.Name
+			}
+			st.Trackers[acc.TrackerID] = acc
+		}
+	}
+
 	st.UpdatedAt = serverNowMs
+}
+
+func mergeTracks(a, b []SyncTrack) []SyncTrack {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	type tkey struct {
+		trackerID int
+		remoteID  int64
+	}
+	byKey := make(map[tkey]SyncTrack, len(a)+len(b))
+	for _, tr := range a {
+		if tr.TrackerID <= 0 || tr.RemoteID == 0 {
+			continue
+		}
+		byKey[tkey{tr.TrackerID, tr.RemoteID}] = tr
+	}
+	for _, tr := range b {
+		if tr.TrackerID <= 0 || tr.RemoteID == 0 {
+			continue
+		}
+		k := tkey{tr.TrackerID, tr.RemoteID}
+		prev, exists := byKey[k]
+		if !exists {
+			byKey[k] = tr
+			continue
+		}
+		res := prev
+		if tr.Title != "" && res.Title == "" {
+			res.Title = tr.Title
+		}
+		if tr.TrackingURL != "" && res.TrackingURL == "" {
+			res.TrackingURL = tr.TrackingURL
+		}
+		if tr.LibraryID != 0 && res.LibraryID == 0 {
+			res.LibraryID = tr.LibraryID
+		}
+		if tr.TotalChapters > res.TotalChapters {
+			res.TotalChapters = tr.TotalChapters
+		}
+		if tr.LastChapterRead > res.LastChapterRead {
+			res.LastChapterRead = tr.LastChapterRead
+		}
+		if tr.UpdatedAt > prev.UpdatedAt {
+			if tr.Status != 0 {
+				res.Status = tr.Status
+			}
+			if tr.Score > 0 {
+				res.Score = tr.Score
+			}
+			if tr.StartedReadingDate > 0 {
+				res.StartedReadingDate = tr.StartedReadingDate
+			}
+			if tr.FinishedReadingDate > 0 {
+				res.FinishedReadingDate = tr.FinishedReadingDate
+			}
+			res.UpdatedAt = tr.UpdatedAt
+		} else {
+			if res.Status == 0 && tr.Status != 0 {
+				res.Status = tr.Status
+			}
+			if res.Score == 0 && tr.Score > 0 {
+				res.Score = tr.Score
+			}
+			if res.StartedReadingDate == 0 && tr.StartedReadingDate > 0 {
+				res.StartedReadingDate = tr.StartedReadingDate
+			}
+			if res.FinishedReadingDate == 0 && tr.FinishedReadingDate > 0 {
+				res.FinishedReadingDate = tr.FinishedReadingDate
+			}
+		}
+		byKey[k] = res
+	}
+	out := make([]SyncTrack, 0, len(byKey))
+	for _, tr := range byKey {
+		out = append(out, tr)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TrackerID != out[j].TrackerID {
+			return out[i].TrackerID < out[j].TrackerID
+		}
+		return out[i].RemoteID < out[j].RemoteID
+	})
+	return out
 }
 
 func mergeChapters(a, b []SyncChapter) []SyncChapter {
@@ -455,13 +596,26 @@ func (s shelf) handleSyncReconcile(w http.ResponseWriter, r *http.Request) {
 		return resp.MissingExtensions[i].PkgName < resp.MissingExtensions[j].PkgName
 	})
 
+	if len(st.Trackers) > 0 {
+		resp.TrackerAccounts = make([]SyncTrackerAccount, 0, len(st.Trackers))
+		for _, acc := range st.Trackers {
+			resp.TrackerAccounts = append(resp.TrackerAccounts, acc)
+		}
+		sort.Slice(resp.TrackerAccounts, func(i, j int) bool {
+			return resp.TrackerAccounts[i].TrackerID < resp.TrackerAccounts[j].TrackerID
+		})
+	}
+
 	// Best-effort bidirectional push back to Suwayomi: deletions, categories,
-	// extension repos, missing library manga materialization, and chapter read states.
+	// extension repos, tracker logins, missing library manga materialization, and chapter read states.
 	if suw != nil {
 		if len(req.DeletedMangaKeys) > 0 {
 			suw.pushRemovals(r.Context(), req.DeletedMangaKeys)
 		}
 		suw.pushCategoriesAndRepos(r.Context(), resp.Categories, resp.ExtensionRepos)
+		if len(resp.TrackerAccounts) > 0 {
+			suw.syncTrackerAccounts(r.Context(), resp.TrackerAccounts)
+		}
 
 		var favMangas []SyncManga
 		for _, m := range resp.Mangas {

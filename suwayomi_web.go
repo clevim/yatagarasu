@@ -1712,20 +1712,24 @@ func (s shelf) handleReadSuwayomiChapter(w http.ResponseWriter, r *http.Request)
 	}
 	info, err := suw.getChapterInfo(r.Context(), chID)
 	if err != nil {
-		http.Error(w, "chapter not found: "+err.Error(), http.StatusNotFound)
-		return
-	}
-	pages, err := suw.getChapterPages(r.Context(), chID)
-	if err != nil {
-		http.Error(w, "could not load chapter pages: "+err.Error(), http.StatusBadGateway)
+		s.renderReader(w, readerViewData{
+			MangaTitle:   "Reader",
+			ChapterTitle: fmt.Sprintf("Chapter #%d", chID),
+			BackURL:      "/library",
+			BackLabel:    "Library",
+			RetryURL:     fmt.Sprintf("/read/%d", chID),
+			LoadError:    "Chapter not found: " + err.Error(),
+		})
 		return
 	}
 
 	backURL := "/browse"
 	backLabel := "Browse"
+	refreshURL := ""
 	if info.MangaID > 0 {
 		backURL = fmt.Sprintf("/manga/%d", info.MangaID)
 		backLabel = "Manga"
+		refreshURL = fmt.Sprintf("/manga/%d/refresh", info.MangaID)
 	}
 	var prevURL, nextURL string
 	if info.PrevChapterID > 0 {
@@ -1735,16 +1739,36 @@ func (s shelf) handleReadSuwayomiChapter(w http.ResponseWriter, r *http.Request)
 		nextURL = fmt.Sprintf("/read/%d", info.NextChapterID)
 	}
 
+	pages, err := suw.getChapterPages(r.Context(), chID)
+	if err != nil {
+		s.renderReader(w, readerViewData{
+			MangaTitle:      info.MangaTitle,
+			ChapterTitle:    info.Name,
+			BackURL:         backURL,
+			BackLabel:       backLabel,
+			PrevURL:         prevURL,
+			NextURL:         nextURL,
+			MarkReadURL:     fmt.Sprintf("/read/%d/read", chID),
+			IsRead:          info.IsRead,
+			RetryURL:        fmt.Sprintf("/read/%d", chID),
+			RefreshMangaURL: refreshURL,
+			LoadError:       "Could not load chapter pages: " + err.Error(),
+		})
+		return
+	}
+
 	s.renderReader(w, readerViewData{
-		MangaTitle:   info.MangaTitle,
-		ChapterTitle: info.Name,
-		BackURL:      backURL,
-		BackLabel:    backLabel,
-		PrevURL:      prevURL,
-		NextURL:      nextURL,
-		MarkReadURL:  fmt.Sprintf("/read/%d/read", chID),
-		IsRead:       info.IsRead,
-		Pages:        pages,
+		MangaTitle:      info.MangaTitle,
+		ChapterTitle:    info.Name,
+		BackURL:         backURL,
+		BackLabel:       backLabel,
+		PrevURL:         prevURL,
+		NextURL:         nextURL,
+		MarkReadURL:     fmt.Sprintf("/read/%d/read", chID),
+		IsRead:          info.IsRead,
+		Pages:           pages,
+		RetryURL:        fmt.Sprintf("/read/%d", chID),
+		RefreshMangaURL: refreshURL,
 	})
 }
 
@@ -2002,15 +2026,18 @@ func (s shelf) readShelfChapterPageBytes(id int64, idx int) ([]byte, error) {
 }
 
 type readerViewData struct {
-	MangaTitle   string
-	ChapterTitle string
-	BackURL      string
-	BackLabel    string
-	PrevURL      string
-	NextURL      string
-	MarkReadURL  string
-	IsRead       bool
-	Pages        []string
+	MangaTitle      string
+	ChapterTitle    string
+	BackURL         string
+	BackLabel       string
+	PrevURL         string
+	NextURL         string
+	MarkReadURL     string
+	IsRead          bool
+	Pages           []string
+	LoadError       string
+	RetryURL        string
+	RefreshMangaURL string
 }
 
 func (s shelf) renderReader(w http.ResponseWriter, data readerViewData) {
@@ -2025,19 +2052,22 @@ func (s shelf) renderReader(w http.ResponseWriter, data readerViewData) {
 	contentSecurityPolicy(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := readerTmpl.Execute(w, map[string]any{
-		"Nonce":          nonce,
-		"MangaTitle":     data.MangaTitle,
-		"ChapterTitle":   data.ChapterTitle,
-		"BackURL":        data.BackURL,
-		"BackLabel":      data.BackLabel,
-		"PrevURL":        data.PrevURL,
-		"NextURL":        data.NextURL,
-		"MarkReadURL":    data.MarkReadURL,
-		"IsRead":         data.IsRead,
-		"Pages":          data.Pages,
-		"PageCount":      len(data.Pages),
-		"HasTranslator":  hasTranslator,
-		"TranslatorLang": translatorLang,
+		"Nonce":           nonce,
+		"MangaTitle":      data.MangaTitle,
+		"ChapterTitle":    data.ChapterTitle,
+		"BackURL":         data.BackURL,
+		"BackLabel":       data.BackLabel,
+		"PrevURL":         data.PrevURL,
+		"NextURL":         data.NextURL,
+		"MarkReadURL":     data.MarkReadURL,
+		"IsRead":          data.IsRead,
+		"Pages":           data.Pages,
+		"PageCount":       len(data.Pages),
+		"HasTranslator":   hasTranslator,
+		"TranslatorLang":  translatorLang,
+		"LoadError":       data.LoadError,
+		"RetryURL":        data.RetryURL,
+		"RefreshMangaURL": data.RefreshMangaURL,
 	}); err != nil {
 		log.Printf("yata: rendering reader page failed: %v", err)
 	}

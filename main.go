@@ -413,6 +413,7 @@ func router(s shelf) http.Handler {
 	mux.HandleFunc("POST /backups/{id}/delete", s.handleBackupDeleteForm)
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSaveSettings)
+	mux.HandleFunc("POST /settings/tracker", s.handleTrackerAuthAction)
 	mux.HandleFunc("GET /{$}", s.handleRoot)
 
 	// /login is the only route outside the gate — it is how you get through it.

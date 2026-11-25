@@ -217,6 +217,33 @@ func encodeSyncPayloadToTachibk(cats []SyncCategory, mangas []SyncManga, extensi
 			}
 		}
 
+		for _, tr := range m.Tracks {
+			if tr.TrackerID <= 0 || tr.RemoteID == 0 {
+				continue
+			}
+			var tb []byte
+			tb = appendProtoVarint(tb, 1, uint64(tr.TrackerID))
+			tb = appendProtoVarint(tb, 2, uint64(tr.LibraryID))
+			if tr.TrackingURL != "" {
+				tb = appendProtoString(tb, 4, tr.TrackingURL)
+			}
+			if tr.Title != "" {
+				tb = appendProtoString(tb, 5, tr.Title)
+			}
+			tb = appendProtoFixed32Float(tb, 6, float32(tr.LastChapterRead))
+			tb = appendProtoVarint(tb, 7, uint64(tr.TotalChapters))
+			tb = appendProtoFixed32Float(tb, 8, float32(tr.Score))
+			tb = appendProtoVarint(tb, 9, uint64(tr.Status))
+			if tr.StartedReadingDate > 0 {
+				tb = appendProtoVarint(tb, 10, uint64(tr.StartedReadingDate))
+			}
+			if tr.FinishedReadingDate > 0 {
+				tb = appendProtoVarint(tb, 11, uint64(tr.FinishedReadingDate))
+			}
+			tb = appendProtoVarint(tb, 100, uint64(tr.RemoteID))
+			mb = appendProtoBytes(mb, 18, tb)
+		}
+
 		mb = appendProtoVarint(mb, 100, boolToUint64(m.Favorite))
 		root = appendProtoBytes(root, 1, mb)
 	}
@@ -479,6 +506,15 @@ func decodeBackupManga(b []byte) (rawDecodedManga, error) {
 				pb = pb[pn:]
 			}
 			b = b[vn:]
+		case fieldNum == 18 && wireType == 2:
+			tb, vn, err := readProtoBytes(b)
+			if err != nil {
+				return out, err
+			}
+			if tr, err := decodeBackupTracking(tb); err == nil && tr.TrackerID > 0 && tr.RemoteID != 0 {
+				out.manga.Tracks = append(out.manga.Tracks, tr)
+			}
+			b = b[vn:]
 		case fieldNum == 100 && wireType == 0:
 			v, vn, err := readProtoVarint(b)
 			if err != nil {
@@ -495,6 +531,116 @@ func decodeBackupManga(b []byte) (rawDecodedManga, error) {
 		}
 	}
 	return out, nil
+}
+
+func decodeBackupTracking(b []byte) (SyncTrack, error) {
+	var (
+		tr         SyncTrack
+		mediaIDInt int64
+	)
+	for len(b) > 0 {
+		fieldNum, wireType, n, err := readProtoTag(b)
+		if err != nil {
+			return tr, err
+		}
+		b = b[n:]
+		switch {
+		case fieldNum == 1 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.TrackerID = int(int64(v))
+			b = b[vn:]
+		case fieldNum == 2 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.LibraryID = int64(v)
+			b = b[vn:]
+		case fieldNum == 3 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			mediaIDInt = int64(v)
+			b = b[vn:]
+		case fieldNum == 4 && wireType == 2:
+			sb, vn, err := readProtoBytes(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.TrackingURL = string(sb)
+			b = b[vn:]
+		case fieldNum == 5 && wireType == 2:
+			sb, vn, err := readProtoBytes(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.Title = string(sb)
+			b = b[vn:]
+		case fieldNum == 6 && wireType == 5:
+			bits, vn, err := readProtoFixed32(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.LastChapterRead = cleanFloat32ToFloat64(math.Float32frombits(bits))
+			b = b[vn:]
+		case fieldNum == 7 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.TotalChapters = int(int64(v))
+			b = b[vn:]
+		case fieldNum == 8 && wireType == 5:
+			bits, vn, err := readProtoFixed32(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.Score = cleanFloat32ToFloat64(math.Float32frombits(bits))
+			b = b[vn:]
+		case fieldNum == 9 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.Status = int(int64(v))
+			b = b[vn:]
+		case fieldNum == 10 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.StartedReadingDate = int64(v)
+			b = b[vn:]
+		case fieldNum == 11 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.FinishedReadingDate = int64(v)
+			b = b[vn:]
+		case fieldNum == 100 && wireType == 0:
+			v, vn, err := readProtoVarint(b)
+			if err != nil {
+				return tr, err
+			}
+			tr.RemoteID = int64(v)
+			b = b[vn:]
+		default:
+			vn, err := skipProtoValue(b, wireType)
+			if err != nil {
+				return tr, err
+			}
+			b = b[vn:]
+		}
+	}
+	if tr.RemoteID == 0 && mediaIDInt != 0 {
+		tr.RemoteID = mediaIDInt
+	}
+	return tr, nil
 }
 
 func decodeBackupExtensionRepo(b []byte) (string, error) {

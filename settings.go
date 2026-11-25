@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -355,4 +357,48 @@ func (s shelf) handleDeleteForm(w http.ResponseWriter, r *http.Request) {
 	os.Remove(s.cbz(id))
 	os.Remove(s.meta(id))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s shelf) handleTrackerAuthAction(w http.ResponseWriter, r *http.Request) {
+	suw := s.suwayomi()
+	if suw == nil {
+		http.Redirect(w, r, "/settings?problem=Suwayomi+is+not+configured.#trackers", http.StatusSeeOther)
+		return
+	}
+	trackerID, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("trackerId")))
+	if err != nil || trackerID <= 0 {
+		http.Redirect(w, r, "/settings?problem=Invalid+tracker+ID.#trackers", http.StatusSeeOther)
+		return
+	}
+	action := strings.TrimSpace(r.PostFormValue("action"))
+	var msg string
+	switch action {
+	case "oauth":
+		cbURL := strings.TrimSpace(r.PostFormValue("callbackUrl"))
+		if cbURL == "" {
+			err = errors.New("paste the callback URL after authorizing")
+		} else {
+			err = suw.loginTrackerOAuth(r.Context(), trackerID, cbURL)
+			msg = "Tracker connected."
+		}
+	case "credentials":
+		user := strings.TrimSpace(r.PostFormValue("username"))
+		pass := r.PostFormValue("password")
+		if user == "" || pass == "" {
+			err = errors.New("username and password are required")
+		} else {
+			err = suw.loginTrackerCredentials(r.Context(), trackerID, user, pass)
+			msg = "Tracker signed in."
+		}
+	case "logout":
+		err = suw.logoutTracker(r.Context(), trackerID)
+		msg = "Tracker disconnected."
+	default:
+		err = fmt.Errorf("unknown tracker action %q", action)
+	}
+	if err != nil {
+		http.Redirect(w, r, "/settings?problem="+url.QueryEscape(err.Error())+"#trackers", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/settings?note="+url.QueryEscape(msg)+"#trackers", http.StatusSeeOther)
 }

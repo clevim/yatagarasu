@@ -940,22 +940,6 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
         <input name="keepReadChapters" type="number" min="0" max="100" value="{{.KeepReadChapters}}">
       </label>
     </div>
-    {{if .Trackers}}
-    <div id="trackers" style="margin-top:.85rem;padding-top:.85rem;border-top:1px solid var(--line)">
-      <div class="panel-head" style="margin-bottom:.4rem">
-        <h3 style="margin:0;font-size:.95rem">Trackers</h3>
-        <span class="hint">OAuth sign-in is managed in Suwayomi-Server</span>
-      </div>
-      <ul class="facts">
-        {{range .Trackers}}
-        <li>
-          <span>{{.Name}}</span>
-          {{if .IsLoggedIn}}<span class="dot ok">connected</span>{{else}}<span class="dot off">not logged in</span>{{end}}
-        </li>
-        {{end}}
-      </ul>
-    </div>
-    {{end}}
   </section>
 
   <section class="panel" id="translate">
@@ -1093,6 +1077,48 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
     </form>
   </div>
 </section>
+
+{{if .Trackers}}
+<section class="panel" id="trackers">
+  <div class="panel-head">
+    <h2>Trackers (MyAnimeList, AniList, Kitsu…)</h2>
+    <span class="hint">Syncs tracking records with Karasu</span>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:.75rem">
+    {{range .Trackers}}
+    <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.65rem;padding:.65rem 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;align-items:center;gap:.55rem">
+        <strong>{{.Name}}</strong>
+        {{if .IsLoggedIn}}<span class="dot ok">connected</span>{{else}}<span class="dot off">not logged in</span>{{end}}
+      </div>
+      {{if .IsLoggedIn}}
+      <form method="post" action="/settings/tracker" style="margin:0">
+        <input type="hidden" name="trackerId" value="{{.ID}}">
+        <input type="hidden" name="action" value="logout">
+        <button class="btn sm ghost" type="submit">Log out</button>
+      </form>
+      {{else if .AuthURL}}
+      <form method="post" action="/settings/tracker" style="margin:0;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center">
+        <input type="hidden" name="trackerId" value="{{.ID}}">
+        <input type="hidden" name="action" value="oauth">
+        <a class="btn sm" href="{{.AuthURL}}" target="_blank" rel="noopener noreferrer">1. Authorize</a>
+        <input name="callbackUrl" type="url" required placeholder="2. Paste redirect URL here" style="min-width:14rem;padding:.35rem .55rem;font:inherit;font-size:.82rem;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius)">
+        <button class="btn sm primary" type="submit">Connect</button>
+      </form>
+      {{else}}
+      <form method="post" action="/settings/tracker" style="margin:0;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center">
+        <input type="hidden" name="trackerId" value="{{.ID}}">
+        <input type="hidden" name="action" value="credentials">
+        <input name="username" required placeholder="Username / Email" style="width:10rem;padding:.35rem .55rem;font:inherit;font-size:.82rem;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius)">
+        <input name="password" type="password" required placeholder="Password" style="width:9rem;padding:.35rem .55rem;font:inherit;font-size:.82rem;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius)">
+        <button class="btn sm primary" type="submit">Sign in</button>
+      </form>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
 
 </div>
 <script nonce="{{.Nonce}}">
@@ -2153,8 +2179,22 @@ var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
 </footer>
 {{else}}
 <div class="empty-reader">
+  {{if .LoadError}}
+  <p style="color:var(--accent);font-weight:560;max-width:34rem;margin:0 auto 1rem">{{.LoadError}}</p>
+  <p style="font-size:.85rem;max-width:34rem;margin:0 auto 1.25rem">If this chapter was imported from a backup or the source changed its URL, refresh the manga chapters or verify the source extension under Browse &rarr; Extensions.</p>
+  {{else}}
   <p>No pages found for this chapter.</p>
-  <p><a class="rbtn" href="{{.BackURL}}">← Back to {{.BackLabel}}</a></p>
+  {{end}}
+  <div style="display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;align-items:center">
+    {{if .RetryURL}}<a class="rbtn active" href="{{.RetryURL}}">Retry</a>{{end}}
+    {{if .RefreshMangaURL}}
+    <form method="post" action="{{.RefreshMangaURL}}" style="margin:0">
+      <button class="rbtn" type="submit">Refresh Chapters</button>
+    </form>
+    {{end}}
+    <a class="rbtn" href="{{.BackURL}}">← Back to {{.BackLabel}}</a>
+    <a class="rbtn" href="/browse?tab=extensions">Extensions</a>
+  </div>
 </div>
 {{end}}
 

@@ -378,6 +378,21 @@ func (c *suwayomiClient) pullLibrary(ctx context.Context) (*SyncPayload, error) 
 						LastReadAt    string  `json:"lastReadAt"`
 					} `json:"nodes"`
 				} `json:"chapters"`
+				TrackRecords struct {
+					Nodes []struct {
+						TrackerID       int       `json:"trackerId"`
+						RemoteID        flexInt64 `json:"remoteId"`
+						LibraryID       flexInt64 `json:"libraryId"`
+						Title           string    `json:"title"`
+						Status          int       `json:"status"`
+						Score           float64   `json:"score"`
+						LastChapterRead float64   `json:"lastChapterRead"`
+						TotalChapters   int       `json:"totalChapters"`
+						RemoteURL       string    `json:"remoteUrl"`
+						StartDate       flexInt64 `json:"startDate"`
+						FinishDate      flexInt64 `json:"finishDate"`
+					} `json:"nodes"`
+				} `json:"trackRecords"`
 			} `json:"nodes"`
 		} `json:"mangas"`
 		Settings struct {
@@ -393,6 +408,9 @@ func (c *suwayomiClient) pullLibrary(ctx context.Context) (*SyncPayload, error) 
 				categories { nodes { name } }
 				chapters {
 					nodes { id url name chapterNumber scanlator isRead isBookmarked lastPageRead lastReadAt }
+				}
+				trackRecords {
+					nodes { trackerId remoteId libraryId title status score lastChapterRead totalChapters remoteUrl startDate finishDate }
 				}
 			}
 		}
@@ -450,6 +468,24 @@ func (c *suwayomiClient) pullLibrary(ctx context.Context) (*SyncPayload, error) 
 				Bookmark:      ch.IsBookmarked,
 				LastPageRead:  ch.LastPageRead,
 				UpdatedAt:     lastRead,
+			})
+		}
+		for _, tr := range m.TrackRecords.Nodes {
+			if tr.TrackerID <= 0 || int64(tr.RemoteID) == 0 {
+				continue
+			}
+			sm.Tracks = append(sm.Tracks, SyncTrack{
+				TrackerID:           tr.TrackerID,
+				RemoteID:            int64(tr.RemoteID),
+				LibraryID:           int64(tr.LibraryID),
+				Title:               tr.Title,
+				Status:              tr.Status,
+				Score:               tr.Score,
+				LastChapterRead:     tr.LastChapterRead,
+				TotalChapters:       tr.TotalChapters,
+				TrackingURL:         tr.RemoteURL,
+				StartedReadingDate:  int64(tr.StartDate),
+				FinishedReadingDate: int64(tr.FinishDate),
 			})
 		}
 		out.Mangas = append(out.Mangas, sm)
@@ -1302,7 +1338,9 @@ func (c *suwayomiClient) getChapterPages(ctx context.Context, chapterID int64) (
 			Pages []string `json:"pages"`
 		} `json:"fetchChapterPages"`
 	}
-	if err := c.graphql(ctx, mut, map[string]any{"chapterId": chapterID}, &data); err != nil {
+	longSuw := *c
+	longSuw.http = &http.Client{Timeout: 60 * time.Second}
+	if err := longSuw.graphql(ctx, mut, map[string]any{"chapterId": chapterID}, &data); err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(data.FetchChapterPages.Pages))
@@ -2693,6 +2731,65 @@ func (c *suwayomiClient) unbindTrack(ctx context.Context, recordID int64) error 
 		}
 	}`
 	return c.graphql(ctx, mut, map[string]any{"recordId": recordID}, nil)
+}
+
+func (c *suwayomiClient) loginTrackerOAuth(ctx context.Context, trackerID int, callbackURL string) error {
+	mut := `mutation LoginTrackerOAuth($trackerId: Int!, $callbackUrl: String!) {
+		loginTrackerOAuth(input: { trackerId: $trackerId, callbackUrl: $callbackUrl }) {
+			isLoggedIn
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{
+		"trackerId":   trackerID,
+		"callbackUrl": strings.TrimSpace(callbackURL),
+	}, nil)
+}
+
+func (c *suwayomiClient) loginTrackerCredentials(ctx context.Context, trackerID int, username, password string) error {
+	mut := `mutation LoginTrackerCredentials($trackerId: Int!, $username: String!, $password: String!) {
+		loginTrackerCredentials(input: { trackerId: $trackerId, username: $username, password: $password }) {
+			isLoggedIn
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{
+		"trackerId": trackerID,
+		"username":  strings.TrimSpace(username),
+		"password":  password,
+	}, nil)
+}
+
+func (c *suwayomiClient) logoutTracker(ctx context.Context, trackerID int) error {
+	mut := `mutation LogoutTracker($trackerId: Int!) {
+		logoutTracker(input: { trackerId: $trackerId }) {
+			isLoggedIn
+		}
+	}`
+	return c.graphql(ctx, mut, map[string]any{"trackerId": trackerID}, nil)
+}
+
+// syncTrackerAccounts automatically logs credential-based trackers (such as
+// Kitsu or MangaUpdates) into Suwayomi when synced from Karasu and not yet
+// logged in on the server.
+func (c *suwayomiClient) syncTrackerAccounts(ctx context.Context, accounts []SyncTrackerAccount) {
+	if len(accounts) == 0 {
+		return
+	}
+	trackers, err := c.listTrackers(ctx)
+	if err != nil {
+		return
+	}
+	loggedByID := make(map[int]bool, len(trackers))
+	for _, tr := range trackers {
+		loggedByID[tr.ID] = tr.IsLoggedIn
+	}
+	for _, acc := range accounts {
+		if acc.TrackerID <= 0 || acc.AuthExpired || loggedByID[acc.TrackerID] {
+			continue
+		}
+		if strings.TrimSpace(acc.Username) != "" && acc.Password != "" {
+			_ = c.loginTrackerCredentials(ctx, acc.TrackerID, acc.Username, acc.Password)
+		}
+	}
 }
 
 // ---- Downloaded Read Chapters Cleanup (C4) ----------------------------------

@@ -280,3 +280,184 @@ func TestEntrypointHardensTmpAndHome(t *testing.T) {
 		t.Errorf("cleanGraphQLError failed: got %q", got)
 	}
 }
+
+func TestReaderRenders200LoadErrorInsteadOf502(t *testing.T) {
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch {
+		case strings.Contains(body.Query, "FetchChapterPages"):
+			writeJSON(w, map[string]any{"errors": []map[string]any{{"message": "Source returned 403\n\tat java.base/Net.call(Net.java:1)"}}})
+		case strings.Contains(body.Query, "chapter("):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"chapter": map[string]any{
+						"id":            14053,
+						"name":          "Chapter 1",
+						"chapterNumber": 1,
+						"isRead":        false,
+						"lastPageRead":  0,
+						"manga": map[string]any{
+							"id":       42,
+							"title":    "Solo Leveling",
+							"chapters": map[string]any{"nodes": []map[string]any{{"id": 14053, "sourceOrder": 1}}},
+						},
+					},
+				},
+			})
+		default:
+			writeJSON(w, map[string]any{"data": map[string]any{}})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/read/14053")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200 reader error view (not 502), got %d", resp.StatusCode)
+	}
+	for _, want := range []string{"Solo Leveling", "Source returned 403", "Retry", "Refresh Chapters"} {
+		if !strings.Contains(string(html), want) {
+			t.Errorf("reader error view missing %q", want)
+		}
+	}
+}
+
+func TestTrackerSyncProtoRoundTripAndSettingsAuth(t *testing.T) {
+	// 1. Protobuf .tachibk BackupTracking round-trip
+	inMangas := []SyncManga{
+		{
+			SourceID: 99,
+			URL:      "/manga/one-piece",
+			Title:    "One Piece",
+			Favorite: true,
+			Tracks: []SyncTrack{
+				{
+					TrackerID:       2,
+					RemoteID:        30013,
+					LibraryID:       777,
+					Title:           "One Piece",
+					LastChapterRead: 1120.5,
+					TotalChapters:   1150,
+					Score:           9.5,
+					Status:          1,
+					TrackingURL:     "https://anilist.co/manga/30013",
+				},
+			},
+		},
+	}
+	raw, err := encodeSyncPayloadToTachibk(nil, inMangas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := decodeTachibkToSyncPayload(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.Mangas) != 1 || len(dec.Mangas[0].Tracks) != 1 {
+		t.Fatalf("expected 1 decoded track, got %+v", dec.Mangas)
+	}
+	tr := dec.Mangas[0].Tracks[0]
+	if tr.TrackerID != 2 || tr.RemoteID != 30013 || tr.LastChapterRead != 1120.5 || tr.Score != 9.5 || tr.TrackingURL != "https://anilist.co/manga/30013" {
+		t.Fatalf("unexpected decoded track: %+v", tr)
+	}
+
+	// 2. Reconcile syncs TrackerAccounts & auto-logs credential trackers into Suwayomi, plus /settings/tracker works
+	var credLogins, oauthLogins, logouts atomic.Int32
+	mockSuw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch {
+		case strings.Contains(body.Query, "ListTrackers"):
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"trackers": map[string]any{
+						"nodes": []map[string]any{
+							{"id": 2, "name": "AniList", "isLoggedIn": false, "authUrl": "https://anilist.co/oauth"},
+							{"id": 3, "name": "Kitsu", "isLoggedIn": false, "authUrl": ""},
+						},
+					},
+				},
+			})
+		case strings.Contains(body.Query, "LoginTrackerCredentials"):
+			credLogins.Add(1)
+			writeJSON(w, map[string]any{"data": map[string]any{"loginTrackerCredentials": map[string]any{"isLoggedIn": true}}})
+		case strings.Contains(body.Query, "LoginTrackerOAuth"):
+			oauthLogins.Add(1)
+			writeJSON(w, map[string]any{"data": map[string]any{"loginTrackerOAuth": map[string]any{"isLoggedIn": true}}})
+		case strings.Contains(body.Query, "LogoutTracker"):
+			logouts.Add(1)
+			writeJSON(w, map[string]any{"data": map[string]any{"logoutTracker": map[string]any{"isLoggedIn": false}}})
+		default:
+			writeJSON(w, map[string]any{"data": map[string]any{}})
+		}
+	}))
+	defer mockSuw.Close()
+
+	dir := t.TempDir()
+	cfg := loadConfig(dir)
+	st := cfg.get()
+	st.SuwayomiURL = mockSuw.URL
+	_ = cfg.save(st)
+	s := shelf{dir: dir, cfg: cfg}
+	srv := httptest.NewServer(router(s))
+	defer srv.Close()
+
+	payload := SyncPayload{
+		DeviceID: "karasu-phone",
+		Mangas:   inMangas,
+		TrackerAccounts: []SyncTrackerAccount{
+			{TrackerID: 2, Name: "AniList", Username: "clevs", Token: "tok-anilist", UpdatedAt: 1000},
+			{TrackerID: 3, Name: "Kitsu", Username: "clevs@example.com", Password: "secret", UpdatedAt: 1000},
+		},
+	}
+	pb, _ := json.Marshal(payload)
+	rResp, err := http.Post(srv.URL+"/api/sync/reconcile", "application/json", bytes.NewReader(pb))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out SyncPayload
+	_ = json.NewDecoder(rResp.Body).Decode(&out)
+	rResp.Body.Close()
+	if len(out.TrackerAccounts) != 2 || credLogins.Load() != 1 {
+		t.Fatalf("expected 2 synced tracker accounts and 1 Suwayomi credential login, got accounts=%d logins=%d", len(out.TrackerAccounts), credLogins.Load())
+	}
+
+	noRedir := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	oResp, err := noRedir.PostForm(srv.URL+"/settings/tracker", url.Values{
+		"trackerId":   {"2"},
+		"action":      {"oauth"},
+		"callbackUrl": {"suwayomi://anilist-auth#access_token=abc"},
+	})
+	if err != nil || oResp.StatusCode != http.StatusSeeOther || oauthLogins.Load() != 1 {
+		t.Fatalf("expected oauth login redirect, got %v %v logins=%d", err, oResp, oauthLogins.Load())
+	}
+	oResp.Body.Close()
+
+	lResp, err := noRedir.PostForm(srv.URL+"/settings/tracker", url.Values{
+		"trackerId": {"2"},
+		"action":    {"logout"},
+	})
+	if err != nil || lResp.StatusCode != http.StatusSeeOther || logouts.Load() != 1 {
+		t.Fatalf("expected logout redirect, got %v %v logouts=%d", err, lResp, logouts.Load())
+	}
+	lResp.Body.Close()
+}
+
