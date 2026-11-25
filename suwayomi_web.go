@@ -293,16 +293,7 @@ func (s shelf) handleBrowsePage(w http.ResponseWriter, r *http.Request) {
 			}
 			exts, err := suw.listExtensions(r.Context())
 			if err == nil && len(extRepos) > 0 && len(exts) == 0 {
-				upgraded := false
-				for _, rURL := range extRepos {
-					norm := normalizeSuwayomiRepoURL(rURL)
-					if norm != "" && norm != strings.TrimSpace(rURL) {
-						if suw.addExtensionRepo(r.Context(), norm) == nil {
-							upgraded = true
-						}
-					}
-				}
-				if upgraded {
+				if suw.migrateLegacyExtensionRepos(r.Context()) {
 					if repos, rerr := suw.getExtensionRepos(r.Context()); rerr == nil {
 						extRepos = repos
 					}
@@ -473,6 +464,7 @@ func (s shelf) handleExtensionAction(w http.ResponseWriter, r *http.Request) {
 	var msg string
 	switch action {
 	case "refresh":
+		suw.migrateLegacyExtensionRepos(r.Context())
 		err = suw.fetchExtensions(r.Context())
 		msg = "Extension list refreshed."
 	case "install":

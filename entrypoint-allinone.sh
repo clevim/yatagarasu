@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensure persistent data directories exist under /data.
+# Ensure persistent data and temp directories exist under /data so hardened
+# read_only: true Docker containers never fail trying to write to /tmp or /root.
 YATA_DATA="${YATA_DATA:-/data/yatagarasu}"
 SUWAYOMI_DIR="${SUWAYOMI_DIR:-/data/suwayomi}"
-mkdir -p "${YATA_DATA}" "${SUWAYOMI_DIR}"
+TMP_DIR="${YATA_TMP_DIR:-${YATA_DATA}/tmp}"
+mkdir -p "${YATA_DATA}" "${SUWAYOMI_DIR}" "${TMP_DIR}"
+
+export TMPDIR="${TMP_DIR}"
+export TEMP="${TMP_DIR}"
+export TMP="${TMP_DIR}"
+export HOME="${SUWAYOMI_DIR}"
 
 # Pre-configure Suwayomi-Server on first boot so it binds strictly to loopback,
 # downloads chapters as CBZ for Karasu, and never tries to open a browser/tray.
@@ -55,6 +62,8 @@ if [ "${ENABLE_SUWAYOMI:-true}" = "true" ] && [ -f /opt/suwayomi/Suwayomi-Server
   # shellcheck disable=SC2086
   java ${JAVA_OPTS:--Xms128m -Xmx512m} \
     -Djava.awt.headless=true \
+    -Djava.io.tmpdir="${TMP_DIR}" \
+    -Duser.home="${SUWAYOMI_DIR}" \
     -Dsuwayomi.tachidesk.config.server.rootDir="${SUWAYOMI_DIR}" \
     -jar /opt/suwayomi/Suwayomi-Server.jar &
   PIDS+=("$!")

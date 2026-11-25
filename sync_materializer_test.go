@@ -422,8 +422,8 @@ func TestBackupRestoreWebAndAPI(t *testing.T) {
 	if !strings.Contains(libResp.Header.Get("Content-Security-Policy"), "img-src 'self' data: https:") {
 		t.Fatalf("expected CSP img-src to allow https:, got %q", libResp.Header.Get("Content-Security-Policy"))
 	}
-	if !strings.Contains(string(libBody), "https://cdn.example.org/covers/dandadan.jpg") {
-		t.Fatalf("expected external cover URL rendered on /library when Suwayomi cover is absent")
+	if !strings.Contains(string(libBody), "/api/cover?url=https%3A%2F%2Fcdn.example.org%2Fcovers%2Fdandadan.jpg") {
+		t.Fatalf("expected proxied cover URL rendered on /library when Suwayomi cover is absent")
 	}
 }
 

@@ -87,12 +87,25 @@ func (c *suwayomiClient) graphql(ctx context.Context, query string, variables ma
 		return err
 	}
 	if len(envelope.Errors) > 0 {
-		return errors.New(envelope.Errors[0].Message)
+		return errors.New(cleanGraphQLError(envelope.Errors[0].Message))
 	}
 	if out != nil && len(envelope.Data) > 0 {
 		return json.Unmarshal(envelope.Data, out)
 	}
 	return nil
+}
+
+func cleanGraphQLError(msg string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(msg, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			if len(line) > 240 {
+				return line[:240]
+			}
+			return line
+		}
+	}
+	return strings.TrimSpace(msg)
 }
 
 // graphqlUpload implements Suwayomi's JavalinGraphQLRequestParser multipart upload
@@ -1566,6 +1579,87 @@ func (c *suwayomiClient) getExtensionRepos(ctx context.Context) ([]string, error
 	return out, nil
 }
 
+// migrateLegacyExtensionRepos ensures every repo stored in legacy
+// settings.extensionRepos is registered in Suwayomi v2.4's ExtensionStoreTable
+// (which ExtensionsList.fetchExtensions actually reads from).
+func (c *suwayomiClient) migrateLegacyExtensionRepos(ctx context.Context) bool {
+	var data struct {
+		ExtensionStores struct {
+			Nodes []struct {
+				IndexURL string `json:"indexUrl"`
+			} `json:"nodes"`
+		} `json:"extensionStores"`
+		Settings struct {
+			ExtensionRepos []string `json:"extensionRepos"`
+		} `json:"settings"`
+	}
+	q := `query GetExtensionRepos {
+		extensionStores { nodes { indexUrl } }
+		settings { extensionRepos }
+	}`
+	if err := c.graphql(ctx, q, nil, &data); err != nil {
+		return false
+	}
+	storeSet := make(map[string]bool, len(data.ExtensionStores.Nodes))
+	for _, n := range data.ExtensionStores.Nodes {
+		if u := strings.TrimSpace(n.IndexURL); u != "" {
+			storeSet[u] = true
+		}
+	}
+	migrated := false
+	for _, n := range data.ExtensionStores.Nodes {
+		raw := strings.TrimSpace(n.IndexURL)
+		norm := normalizeSuwayomiRepoURL(raw)
+		if norm == "" || norm == raw || storeSet[norm] {
+			continue
+		}
+		if err := c.addExtensionRepo(ctx, norm); err == nil {
+			storeSet[norm] = true
+			migrated = true
+		}
+	}
+	for _, r := range data.Settings.ExtensionRepos {
+		raw := strings.TrimSpace(r)
+		norm := normalizeSuwayomiRepoURL(raw)
+		if norm == "" || storeSet[norm] || (norm == raw && storeSet[raw]) {
+			continue
+		}
+		if err := c.addExtensionRepo(ctx, norm); err == nil {
+			storeSet[norm] = true
+			migrated = true
+		}
+	}
+	return migrated
+}
+
+func (c *suwayomiClient) findMangaID(ctx context.Context, sourceID int64, mangaURL string) (int64, error) {
+	if sourceID == 0 || strings.TrimSpace(mangaURL) == "" {
+		return 0, nil
+	}
+	var data struct {
+		Mangas struct {
+			Nodes []struct {
+				ID int64 `json:"id"`
+			} `json:"nodes"`
+		} `json:"mangas"`
+	}
+	q := `query FindMangaID($sourceId: LongString!, $url: String!) {
+		mangas(condition: { sourceId: $sourceId, url: $url }) {
+			nodes { id }
+		}
+	}`
+	if err := c.graphql(ctx, q, map[string]any{
+		"sourceId": strconv.FormatInt(sourceID, 10),
+		"url":      mangaURL,
+	}, &data); err != nil {
+		return 0, err
+	}
+	if len(data.Mangas.Nodes) == 0 {
+		return 0, nil
+	}
+	return data.Mangas.Nodes[0].ID, nil
+}
+
 func (c *suwayomiClient) setExtensionRepos(ctx context.Context, repos []string) ([]string, error) {
 	if repos == nil {
 		repos = []string{}
@@ -2265,6 +2359,7 @@ func (c *suwayomiClient) pushCategoriesAndRepos(ctx context.Context, cats []Sync
 		}
 	}
 	if len(repos) > 0 {
+		added := c.migrateLegacyExtensionRepos(ctx)
 		have := map[string]bool{}
 		if existing, err := c.getExtensionRepos(ctx); err == nil {
 			for _, r := range existing {
@@ -2274,7 +2369,6 @@ func (c *suwayomiClient) pushCategoriesAndRepos(ctx context.Context, cats []Sync
 				}
 			}
 		}
-		added := false
 		for _, r := range repos {
 			norm := normalizeSuwayomiRepoURL(r)
 			if norm == "" || (!strings.HasPrefix(norm, "http://") && !strings.HasPrefix(norm, "https://")) {

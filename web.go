@@ -77,6 +77,9 @@ type navState struct {
 
 type libraryMangaRow struct {
 	SuwayomiID    int64
+	SourceID      int64
+	URL           string
+	Href          string
 	Title         string
 	Initial       string
 	ThumbnailURL  string
@@ -441,10 +444,12 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 		thumb := strings.TrimSpace(m.ThumbnailURL)
 		if strings.HasPrefix(thumb, "/") && !strings.HasPrefix(thumb, "//") {
 			thumb = suwayomiImageURL(thumb)
-		} else if !strings.HasPrefix(thumb, "https://") && !strings.HasPrefix(thumb, "http://") {
-			thumb = ""
+		} else {
+			thumb = coverProxyURL(thumb)
 		}
 		row := &libraryMangaRow{
+			SourceID:     m.SourceID,
+			URL:          m.URL,
 			Title:        m.Title,
 			Initial:      titleInitial(m.Title),
 			ThumbnailURL: thumb,
@@ -507,6 +512,8 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 				}
 				row = &libraryMangaRow{
 					SuwayomiID:    m.ID,
+					SourceID:      m.SourceID,
+					URL:           m.URL,
 					Title:         m.Title,
 					Initial:       titleInitial(m.Title),
 					ThumbnailURL:  m.ThumbnailURL,
@@ -526,6 +533,11 @@ func (s shelf) handleLibraryPage(w http.ResponseWriter, r *http.Request) {
 	var totalChapters, readChapters, mergedTotal int
 	rows := make([]libraryMangaRow, 0, len(allRows))
 	for _, row := range allRows {
+		if row.SuwayomiID > 0 {
+			row.Href = fmt.Sprintf("/manga/%d", row.SuwayomiID)
+		} else if row.SourceID != 0 && row.URL != "" {
+			row.Href = fmt.Sprintf("/manga/sync?sourceId=%d&url=%s", row.SourceID, url.QueryEscape(row.URL))
+		}
 		if selectedCat != "" {
 			matched := false
 			for _, c := range row.Categories {

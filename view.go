@@ -509,13 +509,13 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 <div class="lib-wrap" id="libWrap">
   <div class="lib-grid" id="libGrid">
     {{range .Mangas}}
-    {{if gt .SuwayomiID 0}}
-    <a class="lib-card" href="/manga/{{.SuwayomiID}}" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}" data-unread="{{.UnreadCount}}" data-dl="{{.DownloadCount}}">
+    {{if .Href}}
+    <a class="lib-card" href="{{.Href}}" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}" data-unread="{{.UnreadCount}}" data-dl="{{.DownloadCount}}">
     {{else}}
     <div class="lib-card" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}" data-unread="{{.UnreadCount}}" data-dl="{{.DownloadCount}}">
     {{end}}
       <div class="lib-cover">
-        {{if .ThumbnailURL}}<img src="{{.ThumbnailURL}}" alt="{{.Title}}" loading="lazy">{{else}}<div class="lib-placeholder">{{.Initial}}</div>{{end}}
+        {{if .ThumbnailURL}}<img src="{{.ThumbnailURL}}" alt="{{.Title}}" data-initial="{{.Initial}}" referrerpolicy="no-referrer" loading="lazy">{{else}}<div class="lib-placeholder">{{.Initial}}</div>{{end}}
         {{if or (gt .UnreadCount 0) (gt .DownloadCount 0)}}
         <div class="lib-badges">
           {{if gt .UnreadCount 0}}<span class="badge unread" title="{{.UnreadCount}} unread">{{.UnreadCount}}</span>{{end}}
@@ -528,7 +528,7 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
         <span class="lib-title">{{.Title}}</span>
         {{if .Categories}}<span class="lib-sub">{{range $i, $c := .Categories}}{{if $i}} · {{end}}{{$c}}{{end}}</span>{{end}}
       </div>
-    {{if gt .SuwayomiID 0}}</a>{{else}}</div>{{end}}
+    {{if .Href}}</a>{{else}}</div>{{end}}
     {{end}}
   </div>
 
@@ -540,8 +540,8 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
         <tr class="lib-row" data-title="{{.Title}}" data-cats="{{range .Categories}}{{.}} {{end}}" data-unread="{{.UnreadCount}}" data-dl="{{.DownloadCount}}">
           <td>
             <span class="lib-title-cell">
-              {{if .ThumbnailURL}}<img class="lib-mini" src="{{.ThumbnailURL}}" alt="" loading="lazy">{{end}}
-              {{if gt .SuwayomiID 0}}<a class="lib-link" href="/manga/{{.SuwayomiID}}">{{.Title}}</a>{{else}}<strong>{{.Title}}</strong>{{end}}
+              {{if .ThumbnailURL}}<img class="lib-mini" src="{{.ThumbnailURL}}" alt="" referrerpolicy="no-referrer" loading="lazy">{{end}}
+              {{if .Href}}<a class="lib-link" href="{{.Href}}">{{.Title}}</a>{{else}}<strong>{{.Title}}</strong>{{end}}
             </span>
           </td>
           <td>{{range .Categories}}<span class="tag muted">{{.}}</span> {{end}}</td>
@@ -573,6 +573,14 @@ var libraryTmpl = template.Must(template.New("library").Parse(`<!doctype html>
 </div>
 <script nonce="{{.Nonce}}">
 (function(){
+  document.querySelectorAll(".lib-cover img").forEach(img => {
+    img.addEventListener("error", () => {
+      const ph = document.createElement("div");
+      ph.className = "lib-placeholder";
+      ph.textContent = img.dataset.initial || "?";
+      img.replaceWith(ph);
+    }, { once: true });
+  });
   const wrap = document.getElementById("libWrap");
   const filter = document.getElementById("libFilter");
   const btnCompact = document.getElementById("btnCompact");
@@ -2985,5 +2993,92 @@ var historyTmpl = template.Must(template.New("history").Parse(`<!doctype html>
 
 </div>
 `))
+
+var syncedMangaTmpl = template.Must(template.New("synced_manga").Parse(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Manga.Title}} — Yatagarasu</title>` + baseHead + `
+<style>
+ .sm-hero{display:grid;grid-template-columns:1fr;gap:1.25rem;margin-bottom:1.5rem}
+ @media (min-width:44rem){.sm-hero{grid-template-columns:11rem 1fr}}
+ .sm-cover{aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;background:var(--raise);border:1px solid var(--line)}
+ .sm-cover img{width:100%;height:100%;object-fit:cover;display:block}
+ .sm-cover-ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:3rem;font-weight:650;color:var(--muted)}
+ .sm-meta h1{margin-bottom:.45rem}
+ .sm-tags{display:flex;flex-wrap:wrap;gap:.35rem;margin:.55rem 0 1rem}
+ .sm-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+ .ch-read td{opacity:.65}
+</style>
+<body><div class="wrap">` + navHeader + `
+{{if .Problem}}<p class="flash bad">{{.Problem}}</p>{{end}}
+{{if .Note}}<p class="flash ok">{{.Note}}</p>{{end}}
+
+<div style="margin-bottom:.85rem">
+  <a class="btn sm ghost" href="/library">&larr; Back to Library</a>
+</div>
+
+<section class="panel sm-hero">
+  <div class="sm-cover">
+    {{if .CoverURL}}<img src="{{.CoverURL}}" alt="{{.Manga.Title}}" referrerpolicy="no-referrer">{{else}}<div class="sm-cover-ph">{{.Initial}}</div>{{end}}
+  </div>
+  <div class="sm-meta">
+    <h1>{{.Manga.Title}}</h1>
+    <p class="hint">Synced from Karasu &middot; Source ID <code>{{.Manga.SourceID}}</code> &middot; {{.ReadCount}}/{{.TotalCount}} read ({{.UnreadCount}} unread)</p>
+    <div class="sm-tags">
+      {{range .Manga.Categories}}<span class="tag accent">{{.}}</span>{{end}}
+      {{if .Manga.MergedSources}}<span class="tag muted">{{len .Manga.MergedSources}} merged</span>{{end}}
+    </div>
+    <div class="sm-actions">
+      {{if .SuwayomiConnected}}
+      <form method="post" action="/manga/sync/materialize" style="margin:0">
+        <input type="hidden" name="sourceId" value="{{.Manga.SourceID}}">
+        <input type="hidden" name="url" value="{{.Manga.URL}}">
+        <button class="btn primary" type="submit">Import into Suwayomi to Read</button>
+      </form>
+      <a class="btn" href="/browse?tab=extensions">Install Source Extensions</a>
+      {{else}}
+      <a class="btn" href="/settings#suwayomi">Connect Suwayomi to Read Online</a>
+      {{end}}
+    </div>
+  </div>
+</section>
+
+<section class="card-table">
+  <header>
+    <h2>Synced Chapters <span class="pill">{{.TotalCount}}</span></h2>
+    <p>{{.UnreadCount}} unread</p>
+  </header>
+  {{if .Chapters}}
+  <table>
+    <thead><tr><th>Chapter</th><th>Scanlator</th><th>Status</th><th class="state">Read</th></tr></thead>
+    <tbody>
+      {{range .Chapters}}
+      <tr{{if .Read}} class="ch-read"{{end}}>
+        <td>
+          <strong>{{if .Name}}{{.Name}}{{else}}Chapter {{.Number}}{{end}}</strong>
+          {{if .Bookmark}} <span class="tag accent">bookmarked</span>{{end}}
+        </td>
+        <td class="when">{{if .Scanlator}}{{.Scanlator}}{{else}}&mdash;{{end}}</td>
+        <td>
+          {{if .Read}}<span class="tag muted">Read</span>{{else if gt .LastPageRead 0}}<span class="tag accent">Page {{.LastPageRead}}</span>{{else}}<span class="tag">Unread</span>{{end}}
+        </td>
+        <td class="state">
+          {{if gt .ShelfID 0}}
+          <a class="btn sm primary" href="/read/shelf/{{.ShelfID}}">Read</a>
+          {{else}}
+          <span class="hint">Import above to read</span>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="hint" style="padding:1rem 1.25rem">No chapters synced yet. Click <strong>Import into Suwayomi to Read</strong> above to fetch chapters from the source.</p>
+  {{end}}
+</section>
+
+</div>
+`))
+
 
 
